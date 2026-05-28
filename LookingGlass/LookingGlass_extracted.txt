@@ -1,0 +1,1613 @@
+                                              LookingGlass: Generative Anamorphoses via Laplacian Pyramid Warping
+
+                                           Pascal Chang1,2            Sergio Sancho1,2                 Jingwei Tang2             Markus Gross1,2            Vinicius Azevedo2
+
+                                                                                 1                              2
+                                                                                     ETH Zürich                    DisneyResearch|Studios
+                                                 … a satellite                                                                                    … a snowy
+                                                                    … a turtle         … a botanical garden   … a bunny     … a garden gnome                       … an old man
+arXiv:2504.08902v1 [cs.CV] 11 Apr 2025
+
+
+
+
+                                              view of the Earth                                                                                 mountain village
+
+
+
+
+                                                 an expressionist art of…                          a watercolor painting of…                          an oil painting of…
+
+
+                                         Figure 1. We propose a method to generate ambiguous anamorphoses—images that reveal a hidden image when viewed through a mirror
+                                         or lens. In the examples above, a conic mirror viewed from the top reveals a turtle hidden in an Earth image; a garden, seen through a lens,
+                                         shows a bunny, and rotating the lens slightly reveals a gnome; a cylindrical mirror reflects a village painting into the face of an old man.
+
+                                                                    Abstract                                            1. Introduction
+
+                                         Anamorphosis refers to a category of images that are in-                       Anamorphosis, derived from the Greek ana (“back” or
+                                         tentionally distorted, making them unrecognizable when                         “again”) and morphe (“form”), refers to a category of im-
+                                         viewed directly. Their true form only reveals itself when                      ages that are deliberately distorted, rendering them unrec-
+                                         seen from a specific viewpoint, which can be through some                      ognizable when viewed directly. These optical illusions
+                                         catadioptric device like a mirror or a lens. While the con-                    reveal their true form only when observed from a precise
+                                         struction of these mathematical devices can be traced back                     vantage point or through reflective or refractive surfaces,
+                                         to as early as the 17th century [29], they are only inter-                     such as mirrors or lenses—objects collectively known as
+                                         pretable when viewed from a specific vantage point and tend                    anamorphoscopes [24]. These mathematical curiosities be-
+                                         to lose meaning when seen normally. In this paper, we re-                      came more popular since the 17th century, when the pio-
+                                         visit these famous optical illusions with a generative twist.                  neering treatise by the French mathematician J.-F. Nicéron,
+                                         With the help of latent rectified flow models, we propose a                    La Perspective Curieuse, laid the foundation for their rigor-
+                                         method to create anamorphic images that still retain a valid                   ous construction [29]. However, these images are typically
+                                         interpretation when viewed directly. To this end, we intro-                    interpretable only from specific angles, losing their mean-
+                                         duce Laplacian Pyramid Warping, a frequency-aware im-                          ing when viewed normally.
+                                         age warping technique key to generating high-quality visu-                        In this paper, we propose a method for creating anamor-
+                                         als. Our work extends Visual Anagrams [18] to latent space                     phic images using latent text-to-image models. We focus on
+                                         models and to a wider range of spatial transforms, enabling                    setups in which the image has a valid interpretation when
+                                         the creation of novel generative perceptual illusions.                         viewed as-is without distortions. Our work is similar to the
+                                                                                                                        recent framework of Visual Anagrams proposed by Geng et
+
+
+                                                                                                                    1
+                                                                                                                                 anamorphosis
+                                                    warping UV
+
+
+
+
+                                                                                                     top view                              top view                      oblique view
+                                                                                   Nicéron’s lens                          conic mirror                 cylindrical mirror
+
+
+
+
+                                                                                                                2D warps
+                                                                 % = '(! # )
+                                                       LOD
+                                        !(#)
+   warping UV   level of detail (LOD)                                                     identity                          90° rotation          vertical flip     inner rotate 135°
+
+    (a) View generation                  (b) Laplacian Pyramid Warping                                          (c) Views considered
+
+Figure 2. Laplacian Pyramid Warping. (a) The view mappings are generated using a ray tracer and the Level of Detail (LOD) map is
+computed. (b) For each pixel, our forward warping algorithm looks up in the warping UV mapping and LOD to fetch the corresponding
+value. (c) We consider different views, from 2D transformations like vertical flip and arbitrary angle rotation to complex 3D projections.
+
+
+al. [18], which generates ambiguous images by synchroniz-               Apart from illusion based on 3D geometries, Chu et al. [12]
+ing diffusion paths across multiple views. However, their               explored camouflaging objects by retexturing them, while
+method is constrained to pixel-space diffusion models and               Chandra et al. [8] developed models that shift in percep-
+limited to orthogonal transformations of image pixels. We               tion based on lighting changes. In contrast, we focus on 2D
+address these two limitations in this paper. First, we enable           illusions that require 3D objects to reveal the hidden views.
+the use of latent diffusion and flow models in an artifact-
+free manner, improving the generation quality. We believe
+this will render the generation of these illusions more ac-             Illusions with diffusion models. Recent work has re-
+cessible. Second, we introduce Laplacian Pyramid Warp-                  vealed the potential of diffusion models in creating op-
+ing, a robust image-warping technique that handles complex              tical illusions. Burgert et al. [4] employ score distilla-
+image transformations while preserving high-frequency de-               tion sampling (SDS) to generate images that align with
+tails. This enables the generation of intricate anamorphoses            multiple prompts from different viewpoints. Although
+involving complex reflective and refractive surfaces, with              their optimization-based method can theoretically produce
+minimal sacrifice to image quality. Compared to previous                anamorphoses, it suffers from lower image quality and long
+work, our method demonstrates a significant boost in both               inference times. Visual Anagrams [18] introduces a formal
+the quality and expressiveness of the generated results.                framework for illusion generation in a single diffusion pass.
+                                                                        However, their approach is limited to orthogonal transfor-
+                                                                        mations, making it unsuitable for generating the complex
+2. Related Work
+                                                                        deformations needed for anamorphoses. Subsequent stud-
+Computational optical illusions. Anamorphosis can be                    ies have also explored various types of illusions, such as
+dated back to around the 16th century [22, 29, 39], when                visually meaningful spectrograms [10] and generative hy-
+artists either hand drew the illusions on paper or used grids           brid images [17]. Our proposed method is most similar to
+to create them systematically. Since then, the generation               Visual Anagrams. Key differences, however, are that we
+of optical illusions has seen significant progress, especially          extend to latent space models and a broader range of trans-
+with the advent of computational methods in recent years.               formations. A concurrent work, Illusion3D [16], builds on
+Earlier work focuses on creating illusion with 2D images,               [4] to generate 3D anamorphic illusions, but appears con-
+such as revealing an image by stacking transparent sheets               strained in quality and artistic flexibility. We outline the key
+of images [28], achieving appearance change of images at                differences with our method in the supplementary material.
+different viewing distances [30], creating static images that              Beyond academic research, the artistic community has
+appear to move [11], and designing a refractive lens for re-            also explored diffusion models for optical illusions. No-
+vealing a hidden image from dots [31]. Beyond image ma-                 tably, an anonymous artist known as MrUgleh [38] repur-
+nipulation, several works explored 3D illusions. Hsiao et               posed a model fine-tuned for generating QR codes [25, 44]
+al. [21] introduced multi-view wire art, where a single 3D              to create images that subtly mimic the global structure of a
+wireframe produces different projected images from var-                 specified template image. Our focus is on generating am-
+ious perspectives. Perroni-Scharf and Rusinkiewicz [32]                 biguous images and anamorphoses based on text prompts,
+extended this idea to 3D-printed view-dependent surfaces.               which does not require an image template.
+
+
+                                                                    2
+                                                                       3. Preliminaries
+                                                                       3.1. Text-conditioned Rectified Flows
+                                                                       In Rectified Flows (RFs), a noise sample z0 ∼ N (0, I) is
+                                                                       mapped to an image z1 ∼ p1 through the ODE:
+
+  Figure 3. A real life demo of the cylindrical mirror illusion.                                                                     \label {eq:flow_ode} d \mathbf {z}_t = \boldsymbol {u}_t(\mathbf {z}_t, y)dt,                                                 (1)
+                                                                       where t ∈ [0, 1], y is an optional text prompt condition-
+                                                                       ing, and the velocity field is typically parameterized with a
+Synchronized diffusion. In Visual Anagrams [18], diffu-
+                                                                       neural network, i.e. ut (zt , y) = uθ (zt ; t, y). At inference,
+sion paths from different viewpoints are synchronized by
+                                                                       the ODE is discretized, and solved with classical integration
+averaging the predicted noise at each timestep. Numer-
+                                                                       schemes such as forward Euler:
+ous studies have explored merging diffusion paths, often in
+the context of controlled image generation. MultiDiffusion                                                     \label {eq:flow_euler} \mathbf {z}_{t+\Delta t} = \mathbf {z}_t + \boldsymbol {u}_{\theta }(\mathbf {z}_t; t, y)\Delta t,                           (2)
+[3] proposes a least-squares formulation for merging views,
+which simplifies to averaging in the special case of equal-            Classifier-free guidance (CFG). As in diffusion models,
+size crops—a setup they apply to panorama generation. Dif-             classifier-free guidance [20] can be used to improve sample
+fCollage [45] synthesizes large-scale content by merging               quality in RFs. The final velocity interpolates between a
+outputs from diffusion models trained on segments of the               text-conditioned and an unconditional prediction:
+larger composition. SyncTweedies [23] thoroughly exam-
+ines synchronization techniques, finding that averaging the                             \label {eq:cfg} \hat {\boldsymbol {u}}_t = (1+\omega ) \boldsymbol {u}_\theta (\mathbf {z}_t ; t, y) - \omega \boldsymbol {u}_\theta (\mathbf {z}_t ; t, \varnothing ),    (3)
+predicted clean images yields the best quality. Closer to
+our approach, Generative Powers of Ten [40] creates infi-              where ω is the classifier-free guidance scale. Higher guid-
+nite zoom videos by merging concentric views at different              ance scales typically improve sample quality at the expense
+resolutions using Laplacian pyramids. But their method is              of diversity, but also tend to produce over-saturated images.
+tailored to the specific use case of zooming. One of our
+contributions, Laplacian Pyramid Warping, generalizes this             Predicted clean image. At any intermediate timestep t,
+approach to arbitrary views.                                           an estimate of the clean image, denoted z1|t , can be ob-
+                                                                       tained by a single Euler step to t = 1 using the current
+                                                                       velocity estimate:
+Image pyramids in vision and graphics. Image pyra-
+mids, particularly Gaussian and Laplacian pyramids, are                                                      \label {eq:final_estimate} \mathbf {z}_{1|t} = \mathbf {z}_t + \boldsymbol {u}_{\theta }(\mathbf {z}_t; t, y)(1-t).                                   (4)
+widely used in computer vision for their multi-scale rep-
+                                                                       Equation (4) can be seen as the flow matching equivalent of
+resentation capabilities [5, 13, 42]. By decomposing im-
+                                                                       the Tweedie’s formula [35] in diffusion models.
+ages hierarchically, pyramids enable efficient compres-
+sion, progressive image reconstruction, and seamless blend-            3.2. Gaussian & Laplacian Pyramid
+ing—essential in applications like panorama stitching and
+                                                                       A Gaussian pyramid is a multi-scale representation of an
+HDR imaging [6]. Beyond blending, Gaussian pyramids
+                                                                       image obtained by iteratively applying a Gaussian blur ker-
+are central to scale-invariant object detection and recogni-
+                                                                       nel κ and downsampling D(·). Given an image x, the image
+tion, where they assist in feature detection for algorithms
+                                                                        \mathbb G_l  at level l is computed from the previous level as
+like SIFT [26]. They are also valuable in texture analysis
+and synthesis [19], and optical flow estimation [34], where                                                            \mathbb G_l(\mathbf {x}) = \mathbf {D}(\kappa (\mathbb G_{l-1}(\mathbf {x}))), 
+multi-scale representations enhance accuracy and reduce ar-
+tifacts.                                                               where  \mathbb G_0(\mathbf {x}) =\mathbf {x}  is the original image.
+    In computer graphics, pyramids relate closely to tech-                A Laplacian pyramid stores the high-frequency details
+niques like texture MIP-mapping [15] and antialiasing,                 between each level of a Gaussian pyramid. Each Lapla-
+which address the challenges of rendering textures at vary-            cian level  \mathbb L_l  is defined as the difference between a Gaussian
+ing distances and viewing angles. MIP-maps, essentially                level and the upsampled version of the next level
+a Gaussian pyramid form, allow graphics engines to select                                                   \mathbb L_l(\mathbf {x}) = \mathbb G_l(\mathbf {x}) - \mathbf {U}(\mathbb G_{l+1}(\mathbf {x})), 
+the appropriate level of detail (LOD) based on screen space,
+minimizing artifacts like flickering and enhancing both                with \protect \mathbb  L_{L-1}(\mathbf {x}) = \mathbb G_{L-1}(\mathbf {x})  for a pyramid of depth L and
+quality and efficiency. We repurpose these texture MIP-                U(·) being the upsample operator. To reconstruct the im-
+mapping techniques in our proposed method for frequency-               age, we recursively add each Laplacian level back to the
+aware image warping.                                                   upsampled version of the next level.
+
+
+                                                                   3
+                                                                                                                                                                                  LP Warp    LP Warp
+                                                                                                                                                                                    !!"!                                         Residual
+
+
+
+
+                                                                                                                                             Eq. 4
+                                                                                                                                                         "    VAE                               !!              VAE
+                                                                  …                                                  RF                                 !"|! Decoder                                           Encoder           Correct.
+                                                                                                                                                                                                                                            Step          …
+                                                                                                                                                                                                                           "                        "
+                                                                                     !!" An old man                                                                     "
+                                                                                                                                                                       ""|!          LP                  "
+                                                                                                                                                                                                       "#"|!             !̂"|!                     !!%"
+                                                                                                                                                                                  Blending
+                                                                                                                                                                                             "#"|!
+
+
+
+
+                                                                                                                                             Eq. 4
+                                                                                                                                                         #    VAE                                               VAE              Residual
+                                                                 …                                                   RF                                 !"|! Decoder              LP Warp    LP Warp           Encoder           Correct.
+                                                                                                                                                                                                                                            Step          …
+                                                                                                                                                                                    !#"!     !# = Id
+                                                                                                                                                                                                                           #                        #
+                                                                                     !!#           A snowy                                                              #                                #               !̂"|!                     !!%"
+                                                                                                mountain village                                                       ""|!                            "#"|!
+
+Figure 4. Our Proposed Pipeline. At each denoising step, the estimated final image is computed from the network velocity estimate and
+decoded into image space. Image warping and view aggregation is performed in image space using Laplacian pyramids, before encoding
+back into latent space for the diffusion step.
+
+
+3.3. Visual Anagrams                                                                                                                                                               4. Generative Anamorphosis
+The work of Geng et al. [18] proposes creating multi-view                                                                                                                          Our goal is to generate high-quality anamorphoses from
+images by using a text-to-image generative model to simul-                                                                                                                         text prompts. Anamorphoses involve view functions be-
+taneously denoise multiple views of an image. The original                                                                                                                         yond simple transformations such as rotation, flipping and
+paper utilizes diffusion models. We summarize the method                                                                                                                           pixel permutations where no analytical transformations can
+here through the terminologies of RFs for simplicity.                                                                                                                              be defined. We opt for a more general representation: π
+      A canonical space C is defined for an image. A set of                                                                                                                        is now a 2-channel image of UV coordinates indicating
+prompts yi are associated with different view functions πi ,                                                                                                                       where to fetch values in the canonical view for each pixel
+which transform the image from the canonical space to the                                                                                                                          π(x, y) = (u, v). We implement the transformation with a
+target space T where rectified flow models are applied. At                                                                                                                         simple raytracer by placing a UV coordinate texture on the
+each timestep of the inference, zit of each view is trans-                                                                                                                         main image plane, and rendering the result when viewing
+formed into the canonical space, and averaged together with                                                                                                                        through mirrors or lenses (see Figure 2).
+the other views. After averaging, the noisy images in the                                                                                                                             Simply adopting SyncTweedies [23], however, is not
+canonical space are transformed back to the target space as                                                                                                                        enough when considering latent diffusion models. Thus,
+ẑit , replacing the original zit as                                                                                                                                               in Section 4.1, we present a generalization of previous ap-
+                                                                                                                                                                                   proaches to latent diffusion models. Naively averaging ar-
+                                                                                                                                                                                   bitrary transformations with highly distorted regions, typi-
+                                                                                                                                                                                   cal when looking through curved mirrors or lenses, results
+                    \label {eq:visual_anagram} \hat {\mathbf {z}}^{i}_{t}=\pi _i\left (\frac {1}{N} \sum _j \pi _j^{-1}\left (\mathbf {z}^{j}_{t}\right )\right ).      (5)        in visual artifacts. We introduce a novel Laplacian Image
+                                                                                                                                                                                   Warping method that utilizes a multi-level texture structure
+                                                                                                                                                                                   inspired by classic works in computer graphics [13, 42] in
+                                                                                                                                                                                   Section 4.2 to alleviate this problem. Additional design
+   Transforming noisy samples, as in Geng et al. [18],                                                                                                                             choices are then discussed in Section 4.3. Figure 4 and Al-
+limits possible mappings between the canonical and target                                                                                                                          gorithm 1 show an overview of our method.
+spaces to be orthogonal transformations such as flipping,
+rotation and permutation of pixels. This happens since ar-                                                                                                                         4.1. Latent Visual Anagrams
+bitrarily warping a noise sample is generally more difficult
+than warping images, as bilinear and bicubic interpolations                                                                                                                        Tancik [37] generates multi-view illusions with Stable Dif-
+can destroy the Gaussian noise properties [9]. Moreover,                                                                                                                           fusion 1.5 [36] using a similar pipeline to Geng et al. [18].
+SyncTweedies [23] showed that averaging the predicted                                                                                                                              Images are transformed to canonical space through views
+clean image zi1|t , instead of noisy samples, produces higher                                                                                                                      in the latent space, and decoded to the clean image after the
+quality results. Thus, to allow more general transformations                                                                                                                       denoising process is finished. The results contain visual ar-
+and improve generation quality, we modify Equation (5) to                                                                                                                          tifacts due to the fact that VAEs for latent diffusion and flow
+average predicted clean image using Tweedie’s formula as                                                                                                                           models are generally not trained to be equivariant. When
+                                                                                                                                                                                   the latent images are deformed, the corresponding decoded
+                                                                                                                                                                                   image does not necessarily share the same transformation.
+                                                                                                                                                                                   While these artifacts are less pronounced in recent models
+              \label {eq:sync_tweedies} \hat {\mathbf {z}}^{i}_{1|t}=\pi _i\left (\frac {1}{N} \sum _j \pi _j^{-1}\left (\mathbf {z}^{j}_{1|t}\right )\right ).         (6)        with larger latent spaces (e.g. Stable Diffusion 3 [14]), they
+                                                                                                                                                                                   still persist and create undesirable strokes (see Figure 5).
+
+
+                                                                                                                                                                              4
+                                                                                                                                                                                                                                          4.2. Laplacian Pyramid Warping (LPW)
+                                                                                                                                                                                                                                          While the above modifications enable using latent diffusion
+                                                                                                                                                                                                                                          and flow models for creating ambiguous images with arbi-
+                                                                                                                                                                                                                                          trary 2D transformations, applying it to the generation of
+                                                                                                                                                                                                                                          anamorphoses still presents a few challenges. First, a view
+                                                                                                                                                                                                                                          in anamorphosis rarely covers the entirety of the main im-
+                                                                                                                                                                                                                                          age. As such, boundaries can create visible artifacts and
+                                                                                                                                                                                                                                          seams that are undesirable. Second, having views that have
+                                                                                                                                                                                                                                          varying degrees of stretching can lead to degraded high fre-
+     Geng et al.                                          + Final Estimate                                                                 + VAE                                           + Residual Corr.
+                                                                                                                                                                                                                                          quency details (see Figure 6).
+                                                                                                                                                                                     ◦
+                                                                                                                                                                                                                                             We identify the key problem being using the averaging
+Figure 5. Latent Visual Anagrams. In this 135 rotation exam-                                                                                                                                                                              operation as aggregation of views. When images of differ-
+ple, we demonstrate that contributions from Sec. 4.1 improve the
+                                                                                                                                                                                                                                          ent views are transformed to the canonical view, they can
+generation of visual anagrams with latent models. While the final
+                                                                                                                                                                                                                                          have different frequency components. One view may map
+estimate from SyncTweedies [23] partially addresses noise issues,
+artifacts from the VAE persist. Our VAE encoding/decoding pro-                                                                                                                                                                            to a small pixel subset in the canonical view or undergo
+cess and residual correction further enhance image quality.                                                                                                                                                                               large stretching. Averaging pixels of these views with an-
+                                                                                                                                                                                                                                          other view not stretched so much ignores the frequency mis-
+                                                                                                                                                                                                                                          matching problem. To solve this problem, we propose to
+VAE encoding-decoding. To tackle this issue, we pro-                                                                                                                                                                                      use Laplacian pyramid [7] for blending the views.
+pose to keep all image transformations in image space. This                                                                                                                                                                                  After decoding the predicted clean latent, Inverse Lapla-
+is done by decoding the estimated clean image latent to                                                                                                                                                                                   cian Warping π −1 is used to map the image to a Laplacian
+pixel space, applying the transformation, and re-encoding it                                                                                                                                                                              pyramid in the canonical view. The canonical views are
+to latent space. Denoting E, D the encoder and decoder of                                                                                                                                                                                 then aggregated through Laplacian Pyramid Blending. Af-
+the VAE respectively, our estimated clean latent at timestep                                                                                                                                                                              terwards, the canonical views are transformed back to im-
+t, in view i, becomes                                                                                                                                                                                                                     ages through Forward Laplacian Warping π.
+
+                            \label {eq:latent_aggreg} \hat {\mathbf {z}}^{i}_{1|t}=\mathcal E \circ \pi _i\left (\frac {1}{N} \sum _j \pi _j^{-1} \circ \mathcal D \left (\mathbf {z}^{j}_{1|t}\right )\right ).       (7)                Forward Laplacian Warping. Given an image x and
+                                                                                                                                                                                                                                          a view projection π, we propose a Level-of-Detail-Aware
+                                                                                                                                                                                                                                          (LOD-aware) method to compute y = π(x). First,
+Residual correction. While Eq. (7) proved to be effective                                                                                                                                                                                 we build a Gaussian pyramid from our image G(x) =
+in removing the artifacts, we observed that it can be sensi-                                                                                                                                                                              {G0 (x), ..., GL−1 (x)}. Then, we compute a LOD level
+tive to the VAE reconstruction quality. In particular, when                                                                                                                                                                               map using π and image-space derivatives. For a given pixel
+the input latent is far from the training distribution of the                                                                                                                                                                             (x, y), the LOD level is given by:
+VAE (e.g. predicted clean image from early steps of denois-
+ing), the reconstruction typically fails to match the value                                                                                                                                                                                                                                                                                                                                          (9)
+range of the input. This creates washed-out colors in the
+final image. We correct the reconstruction failure through a                                                                                                                                                                              The transformed image is obtained by sampling the pyramid
+first-order term ∆ẑi1|t . This is done by first computing the                                                                                                                                                                            G(x) with the LOD map using nearest or trilinear interpola-
+residual between the latent and the decoded-encoded latent.                                                                                                                                                                               tion. This approach is commonly used in computer graphics
+This residual is then transformed to a target view as                                                                                                                                                                                     when rendering textures to avoid aliasing. Our contribution
+                                                                                                                                                                                                                                          lies in connecting the method to our problem and repurpos-
+                                                                                                                                                                                                                                          ing the idea for image warping. For clarity, we simplify the
+   \label {eq:delta_aggreg} \Delta \hat {\mathbf {z}}^{i}_{1|t}=\pi _i\left (\frac {1}{N} \sum _j \pi _j^{-1} \left (\mathbf {z}^{j}_{1|t} - \mathcal E \circ \mathcal D \left (\mathbf {z}^{j}_{1|t}\right )\right )\right ).  (8)       equation as y = π(G(x)).
+
+   This correction term is then added to Eq. (7) as the fi-                                                                                                                                                                               Inverse Laplacian Warping. To transform an image y,
+nal estimated clean latent. The correction has two nice                                                                                                                                                                                   into a Laplacian pyramid in the canonical view G(x) =
+properties. First, if the VAE reconstruction is perfect, then                                                                                                                                                                             π −1 (y), we define the inverse Laplacian warping operation.
+E(D(z)) = z, and ∆z = 0. Therefore, no correction is                                                                                                                                                                                      As inverting an arbitrarily complex image transformation is
+done. Second, when there is only one single identity view                                                                                                                                                                                 infeasible, we make use of the gradient of Forward Lapla-
+(N = 1), we recover ẑj1|t = zj1|t , the original predicted                                                                                                                                                                               cian Warping. Consider a dummy zero image x0 = 0, our
+clean latent, as expected. Figure 5 compares different steps                                                                                                                                                                              inverted image pyramid is given by:
+presented in this section, and shows the effectiveness of the
+residual correction in maintaining the vibrant colors.                                                                                                                                                                                                 \label {eq:inversion} \mathbb G(\mathbf {x}) = -\nabla _{\mathbf {x}^0}\left [\frac 1 2 \| \pi (\mathbf {x}^0) - \mathbf {y}\|^2\right ].    (10)
+
+
+                                                                                                                                                                                                                                      5
+                  w/o Laplacian Warping   w/ Laplacian Warping (ours)        Algorithm 1: LookingGlass
+                                                                              Input: ∀i ∈ 0, ..., N − 1: view transformations πi
+                                                                                     and text prompts yi , with N being the
+ view 2
+
+
+
+
+                                                                                     number of views. Pretrained RF model uθ .
+                                                                              Output: Final images in each view x01 , ..., x1N −1
+                                                                             1 z00 , ..., z0N −1 ∼ N (0, I)
+!!"! (view 2)
+
+
+
+
+                                                                             2 for t ← 0 : T do
+                                                                             3       for i ← 0 : N − 1 do
+                                                                             4             zi1|t ← zit + uθ (zit ; t, y)(1 − t) \triangleright  Eq. (4)
+                                                                                              i                          i
+                                                                             5             x1|t ← VAE D ECODE (z1|t )
+                                                                                           ∆zi1|t ← zi1|t − VAE E NCODE (xi1|t )
+   final result
+
+
+
+
+                                                                             6
+
+                                                                             7       end
+                                                                             8       x̂1|t ← L APLACIAN B LENDING
+                                                                                                             −1
+                                                                                       (π0−1 (x01|t ), ..., πN       N −1
+                                                                                                               −1 (x1|t ))
+Figure 6. Inverse Laplacian Warping. In this conic mirror ex-                9       ∆ẑ1|t ← L APLACIAN B LENDING
+                                                                                                                         N −1
+ample, we use a challenging pair of prompts to demonstrate our                         (π0−1 (∆z01|t ), ..., πN −1
+                                                                                                                 −1 (∆z1|t ))
+inverse warping. The main view shows “a jungle,” while the mir-             10       for i ← 0 : N − 1 do
+ror view reveals “a portrait of Einstein.” Without inverse Lapla-
+                                                                            11             x̂i1|t ← πi (x̂1|t )
+cian warping, gaps from the inverse transformation cause striped
+artifacts and distortions. Our Inverse Laplacian Warping (Sec. 4.2)         12             ẑi1|t ← VAE E NCODE (x̂i1|t )       \triangleright  Eq. (7)
+                                                                                                                   
+correctly assigns values at the right frequencies, eliminating arti-        13             ∆ẑi1|t ← πi ∆ẑ1|t                  \triangleright  Eq. (8)
+facts and making the mirror view more recognizable.                         14
+                                                                                              i       i
+                                                                                           ẑ1|t ← ẑ1|t + ∆ẑ1|ti
+                                                                                                                                     
+                                                                            15             zit+1 ← D ENOISING S TEP ẑi1|t , zit
+This effectively transports the pixels in y to the correspond-              16      end
+ing location and level in the pyramid. We then propagate the
+                                                                            17 end
+changes of lower levels to higher ones, and extract a Lapla-                      i                   i
+                                                                                                           
+                                                                            18 {x1 }i ← VAE D ECODE {zT }i
+cian pyramid out of the resulting pyramid. More details can                             0        N −1
+                                                                            19 return x1 , ..., x1
+be found in the supplementary material.
+
+Laplacian Pyramid Blending is used for aggregating
+different canonical views to obtain a synchronized image                    repeating segments of the denoising process allows the
+for the given denoising step. Each level is averaged and the                model to blend different views better. To keep the infer-
+final image is reconstructed from the resulting Laplacian                   ence efficient, similar to FreeDoM [43], we only apply time
+pyramid. In the case of anamorphic illusions, most views                    traveling at intermediate timesteps between 20% and 80%
+will only cover the identity space partially, so the blending               of the denoising process and use segments of size 1.
+is weighted by a set of masks at each level. Special care
+need to be taken at the boundary of the masks, as well                      Prioritizing a single view. We observed that a key com-
+as during averaging, which we further discuss in the                        ponent to the success of previous works [4, 18, 37] lies in
+supplementary material.                                                     the fact that generated images generally lack detail. This
+                                                                            makes it easier for human imagination to interpret image
+4.3. Design Choices & Further Improvements                                  features differently based on different prompts. With la-
+                                                                            tent flow models, our method generates highly detailed im-
+Model choice. Our method is designed to work with la-                       ages at 1K resolution. This poses a new challenge, as high-
+tent rectified flow and diffusion models. However, we ob-                   frequency details are rarely compatible between the views
+served that different models behave differently to our syn-                 and easily give away hidden views. As this is an inherent
+chronization scheme, which we discuss in the supplemen-                     problem with high resolution images, we propose to priori-
+tary. For the majority of our experiments, we use Stable                    tize one of the views, which is defined by the user. We set
+Diffusion 3.5 because of their higher visual quality.                       a portion of the last timesteps of the denoising process to
+                                                                            be solely denoising for the chosen view. This encourages
+Improved consistency with time travel. Similar to                           the model to create coherent details towards the end, while
+DDNM [41], RePaint [27] and Bansal et al. [2], we found                     hiding the remaining views better.
+
+
+                                                                        6
+              23*4+)51*6')%07,'+0                   !"#$%&'$()#*+$'','                           !,%$(*+$'','                                   -$(.',%/0 #1%0
+;1%&1'1&
+
+
+
+
+              !"#               !"#
+           +,-').(/01/)2    !"#$ %&'(')&*
+           A painting of…    A watercolor      A comic book      An oil painting       A clay sculpture        A cinematic            A 16-bit sprite      A hyperrealistic
+                             painting of…       panel of…              of…                   of…              rendering of…                of…              sculpture of…
+8$19 :
+
+
+
+
+             … a table          … a ship       … sunlit rocky    … sunlit canyon       … an aquarium        … an icy cave             … a desert oasis      … straight ski
+                                                  outcrop       with straight cliffs       tunnel          with stalactites                                     tracks
+8$19 2
+
+
+
+
+            … waterfalls      … a village in    … a turtle           … a bull          … a polar bear          … a parrot               … a dragon         … a motorcycle
+                             the mountains
+
+
+
+Figure 7. Generative Anamorphoses. Generated results with our approach for 2D transformations, and the three types of anamorphoses:
+a cylindrical mirror, a conic mirror, and Nicéron’s lens. A rendering of the physical setup is shown in the top row when applicable.
+
+
+5. Experiments                                                                         illusion), as well as with our method. The results are re-
+                                                                                       ported in Table 1 for three tasks: simple vertical flip, a more
+5.1. Views Considered                                                                  complex 135◦ rotation, and the cylindrical mirror anamor-
+In this section we briefly describe the views considered for                           phosis. Our results are generated with Stable Diffusion 3.5
+generating illusions, which are shown in Figure 2 (c).                                 Medium on a Nvidia GeForce RTX 4090 GPU. Using 30 in-
+• 2D transforms. As in Visual Anagrams [18], we generate                               ference steps, with time-traveling between 20% and 80% of
+  vertical flip and 90◦ rotation illusions. Since our method                           the diffusion process repeated twice, we generate an image
+  can handle arbitrary view projections, we also create op-                            pair in approximately 80 seconds.
+  tical illusions involving 135◦ rotations.
+• Mirror cone. A conic mirror placed at the center of an                                             Method                   A↑       A0.9 ↑     C↑     C0.9 ↑   FID ↓    KID ↓
+  image reveals a hidden picture when viewed from the top.                                           Geng et al. [18]         0.306     0.340    0.695   0.786    149.24   0.057
+• Mirror cylinder. A cylindrical mirror located over an im-                               Vertical
+                                                                                                     Tancik SD 3.5 [37]       0.306     0.349    0.693   0.806    132.52   0.049
+                                                                                                     Burgert et al. [4]       0.281     0.324    0.679   0.778    219.84   0.115
+  age shows a hidden picture when viewed from an angle.                                    Flip
+                                                                                                     SyncTweedies [23]        0.302     0.341    0.707   0.801    132.62   0.054
+                                                                                                     LookingGlass (ours)      0.297     0.338    0.680   0.779    124.67   0.049
+• Nicéron’s lens. We replicate the setting described by
+                                                                                                     Geng et al. [18]         0.262     0.308    0.563   0.652    293.00   0.254
+  Nicéron [29]. Given an image, and looking at it through                                           Tancik SD 3.5 [37]       0.194     0.216    0.498   0.509    439.35   0.545
+                                                                                          135◦
+  a lens sculpted with polygonal faces, the irregular refrac-                            Rotation
+                                                                                                     Burgert et al. [4]       0.280     0.326    0.654   0.760    223.21   0.120
+                                                                                                     SyncTweedies [23]        0.283     0.335    0.647   0.753    166.03   0.083
+  tion will generate novel images.                                                                   LookingGlass (ours)      0.295     0.338    0.666   0.767    129.74   0.055
+   Note that in our examples, we always set one view as                                             Geng et al. [18]          0.171     0.198    0.506   0.546    285.23   0.216
+                                                                                                    Tancik SD 3.5 [37]        0.171     0.198    0.505   0.547    284.97   0.215
+the identity view (i.e. the canonical view), but this is not re-                        Cylindrical
+                                                                                                    Burgert et al. [4]        0.261     0.304    0.706   0.795    229.65   0.138
+                                                                                         Mirror
+quired. Transforms πi can be defined relative to a canonical                                        SyncTweedies [23]         0.241     0.284    0.673   0.763    138.69   0.082
+                                                                                                    LookingGlass (ours)       0.272     0.318    0.698   0.810    130.27   0.070
+space C without explicitly specifying the latter.
+5.2. Quantitative Results                                                              Table 1. Quantitative Comparison. Sample quality is assessed
+                                                                                       with FID/KID against a reference dataset of 3.2k images generated
+We compare our method quantitatively with Visual Ana-                                  from the same set of prompts. Image-prompt alignment is assessed
+grams [18], Diffusion Illusions [4], SyncTweedies [23], and                            using CLIP alignment score A, and concealment score C intro-
+Tancik [37]. Following Geng et al., CLIP is used [33]                                  duced in [18]. While all methods achieve comparable results for
+to measure the alignment score A and the concealment                                   the vertical flip, LookingGlass surpasses previous approaches on
+score C. We generate 50 pairs of prompts and create im-                                more complex transformations, including anamorphoses. Please
+ages for these prompts using standard denoising (no optical                            see the supplementary material for more quantitative evaluations.
+
+
+                                                                                   7
+                     Geng et al.        Tancik      Burgert et al.     Ours (view 1)      Ours (view 2)       5.4. Qualitative Results
+                                                                                                              Figures 8 and 7 show example images generated using our
+Vertical Flip
+
+
+
+
+                                                                                                              method in combination with Stable Diffusion 3.5. Figure 3
+                                                                                                              features a real-life demonstration of the cylindrical exam-
+                         a watercolor painting of… a village in the mountains / a ship                        ple, confirming that the generated results function as in-
+                                                                                                              tended in practice. Additional results for all three types of
+135° Rotation
+
+
+
+
+                                                                                                              anamorphoses are provided in the Appendix. These results
+                                                                                                              are selected from a set of curated prompts that worked best,
+                                                                                                              as not all prompt combinations are expected to work well.
+                                         a painting of… a turtle / a gorilla
+
+                                                                                                              5.5. User Study
+Conic Mirror
+
+
+
+
+                                                                                                              We conducted a user study with 27 participants. A total of
+                                                                                                              10 prompt pairs, the same for all three types of illusions,
+                                   a lithograph of… a frozen waterfall / a cougar                             were selected to generate results using different methods,
+Cylindrical Mirror
+
+
+
+
+                                                                                                              with the same random seed (no hand-picked samples). Par-
+                                                                                                              ticipants ranked the samples from 1 (best) to 5 (worst) based
+                                                                                                              on prompt fidelity, style adherence and overall visual qual-
+                                                                                                              ity. The results are reported in Figure 9.
+                        an oil painting of… a sunlit canyon with straight cliffs / a bull
+Nicéron’s Lens
+
+
+
+
+                              a vintage poster of… a dense tropical forest / a deer
+
+
+Figure 8. Qualitative Comparison. We compare our method
+against prior work for the considered views (Sec. 5.1). Note that
+all transformations except the vertical flip are not supported by
+Geng et al. [18] and Tancik [37] due to their inherent limitations.
+                                                                                                              Figure 9. User Study. A survey of 27 participants shows that our
+                                                                                                              method (blue) is consistently preferred to prior works.
+
+5.3. Ablations
+                                                                                                              6. Conclusion and Discussion
+We perform an ablation of the proposed approach. Figure 5
+shows that warping the clean image estimate significantly                                                     We presented LookingGlass, a method for generating high-
+improves image quality compared to warping the predicted                                                      quality, ambiguous anamorphic illusions with latent RF
+noise. Additionally, the proposed VAE encoding/decoding                                                       models. Our contributions are twofold. First, we extended
+and latent residual correction enhance detail preservation                                                    Geng et al. [18] to latent space models without introducing
+and reduce reconstruction errors. Table 2 suggests that time                                                  artifacts, enabling the first feed-forward generation of high-
+traveling improves visual quality, as reflected by the FID                                                    quality illusions with common models. This makes illusion
+metric, but may lead to reduced prompt alignment. Further                                                     generation more accessible and allows for possible integra-
+qualitative ablations on time traveling and the effects of pri-                                               tion with modern generative techniques like ControlNet and
+oritizing a single view can be found in the Appendix.                                                         DreamBooth. Second, we introduced Laplacian Pyramid
+                                                                                                              Warping (LPW), a warping method that preserves fine de-
+                                                                                                              tails while handling extreme distortions. While essential for
+                                             A↑      A0.9 ↑      C↑      C0.9 ↑        FID ↓   KID ↓
+                                                                                                              illusion generation, LPW is also compatible with pixel dif-
+          Geng et al. SD 3 [18]             0.219    0.249     0.516     0.571     335.24       0.297
+                                                                                                              fusion models and has potential applications in generative
+          + Final Estimate (Eq. 4)          0.273    0.320     0.657     0.757     171.61       0.106         mesh texturing and panorama synthesis.
+          + VAE (Sec. 4.1)                  0.293    0.333     0.717     0.814     160.17       0.083             Despite these advances, selecting effective prompts re-
+          + LPW (Sec. 4.2)                  0.300    0.336     0.723     0.814     153.27       0.074
+          + Time Travel (Sec. 4.3)          0.295    0.331     0.716     0.816     150.01       0.074         mains a challenge, as not all prompts lead to high-quality
+                                                                                                              illusions. Additionally, while our method is significantly
+Table 2. Ablation Study. Starting from the baseline of Geng et al.                                            more efficient than optimization-based approaches like
+[18], we ablate the contributions introduced by our approach. We                                              Burgert et al. [4], it is computationally more expensive than
+also show the 90th-percentile of the CLIP-based metrics, as we are                                            Geng et al. [18] due to the VAE intermediate steps. We
+interested in the best case performance.                                                                      leave this to future work.
+
+
+                                                                                                          8
+References                                                                     In Forty-first International Conference on Machine Learn-
+                                                                               ing, 2024. 4
+ [1] DeepFloyd Lab at StabilityAI. DeepFloyd IF: a novel state-
+                                                                          [15] Jon P Ewins, Marcus D Waller, Martin White, and Paul F
+     of-the-art open-source text-to-image model with a high de-
+                                                                               Lister. Mip-map level selection for texture mapping. IEEE
+     gree of photorealism and language understanding. https:
+                                                                               Transactions on Visualization and Computer Graphics, 4(4):
+     //www.deepfloyd.ai/deepfloyd-if, 2023. Re-
+                                                                               317–329, 1998. 3
+     trieved on 2023-11-08. 15
+                                                                          [16] Yue Feng, Vaibhav Sanjay, Spencer Lutz, Badour AlBahar,
+ [2] Arpit Bansal, Hong-Min Chu, Avi Schwarzschild,                            Songwei Ge, and Jia-Bin Huang. Illusion3d: 3d multiview
+     Soumyadip Sengupta, Micah Goldblum, Jonas Geip-                           illusion with 2d diffusion priors. 2024. 2, 17
+     ing, and Tom Goldstein. Universal guidance for diffusion
+                                                                          [17] Daniel Geng, Inbum Park, and Andrew Owens. Factorized
+     models. In Proceedings of the IEEE/CVF Conference on
+                                                                               diffusion: Perceptual illusions by noise decomposition. In
+     Computer Vision and Pattern Recognition, pages 843–852,
+                                                                               European Conference on Computer Vision (ECCV), 2024. 2
+     2023. 6
+                                                                          [18] Daniel Geng, Inbum Park, and Andrew Owens. Visual ana-
+ [3] Omer Bar-Tal, Lior Yariv, Yaron Lipman, and Tali Dekel.
+                                                                               grams: Generating multi-view optical illusions with diffu-
+     Multidiffusion: Fusing diffusion paths for controlled image
+                                                                               sion models. In Conference on Computer Vision and Pattern
+     generation. arXiv preprint arXiv:2302.08113, 2023. 3
+                                                                               Recognition (CVPR), 2024. 1, 2, 3, 4, 6, 7, 8, 15, 16, 17, 18
+ [4] Ryan Burgert, Xiang Li, Abe Leite, Kanchana Ranasinghe,              [19] David J. Heeger and James R. Bergen. Pyramid-based tex-
+     and Michael Ryoo. Diffusion illusions: Hiding images in                   ture analysis/synthesis. In Proceedings of the 22nd Annual
+     plain sight. In ACM SIGGRAPH 2024 Conference Papers,                      Conference on Computer Graphics and Interactive Tech-
+     New York, NY, USA, 2024. Association for Computing Ma-                    niques, page 229–238, New York, NY, USA, 1995. Asso-
+     chinery. 2, 6, 7, 8, 14, 15, 17, 18                                       ciation for Computing Machinery. 3
+ [5] P. Burt and E. Adelson. The laplacian pyramid as a compact           [20] Jonathan Ho and Tim Salimans. Classifier-free diffusion
+     image code. IEEE Transactions on Communications, 31(4):                   guidance. arXiv preprint arXiv:2207.12598, 2022. 3
+     532–540, 1983. 3                                                     [21] Kai-Wen Hsiao, Jia-Bin Huang, and Hung-Kuo Chu. Multi-
+ [6] Peter J. Burt and Edward H. Adelson. A multiresolution                    view wire art. ACM Trans. Graph., 37(6), 2018. 2
+     spline with application to image mosaics. ACM Trans.                 [22] Baltrusaitis Jurgis and WJ Strachan. Anamorphic Art.
+     Graph., 2(4):217–236, 1983. 3                                             Abrams, New York, 1977. 2
+ [7] Peter J Burt and Edward H Adelson. The laplacian pyramid             [23] Jaihoon Kim, Juil Koo, Kyeongmin Yeo, and Minhyuk Sung.
+     as a compact image code. In Readings in computer vision,                  Synctweedies: A general generative framework based on
+     pages 671–679. Elsevier, 1987. 5                                          synchronized diffusions. arXiv:2403.14370, 2024. 3, 4, 5, 7,
+ [8] Kartik Chandra, Tzu-Mao Li, Joshua Tenenbaum, and                         15, 18
+     Jonathan Ragan-Kelley. Designing perceptual puzzles by               [24] Philip Kuchel. Anamorphoscopes: A visual aid for circle
+     differentiating probabilistic programs. In Special Interest               inversion. The Mathematical Gazette, 63:82, 1979. 1
+     Group on Computer Graphics and Interactive Techniques                [25] Monster Laabs. Controlnet qr code monster v2 for sd-1.5,
+     Conference Proceedings (SIGGRAPH ’22 Conference Pro-                      2023. 2
+     ceedings), 2022. 2                                                   [26] David G Lowe. Distinctive image features from scale-
+ [9] Pascal Chang, Jingwei Tang, Markus Gross, and Vinicius C.                 invariant keypoints. International journal of computer vi-
+     Azevedo. How i warped your noise: a temporally-correlated                 sion, 60:91–110, 2004. 3
+     noise prior for diffusion models. In The Twelfth International       [27] Andreas Lugmayr, Martin Danelljan, Andres Romero, Fisher
+     Conference on Learning Representations, 2024. 4                           Yu, Radu Timofte, and Luc Van Gool. Repaint: Inpainting
+[10] Ziyang Chen, Daniel Geng, and Andrew Owens. Images that                   using denoising diffusion probabilistic models. In Proceed-
+     sound: Composing images and sounds on a single canvas.                    ings of the IEEE/CVF conference on computer vision and
+     Neural Information Processing Systems (NeurIPS), 2024. 2                  pattern recognition, pages 11461–11471, 2022. 6
+[11] Ming-Te Chi, Tong-Yee Lee, Yingge Qu, and Tien-Tsin                  [28] Mizuho Nakajima and Yasushi Yamaguchi. Picture illusion
+     Wong. Self-animating images: Illusory motion using re-                    by overlap. In ACM SIGGRAPH 2004 Posters, page 56, New
+     peated asymmetric patterns. ACM Transactions on Graphics                  York, NY, USA, 2004. Association for Computing Machin-
+     (SIGGRAPH 2008 issue), 27(3):62:1–62:8, 2008. 2                           ery. 2
+[12] Hung-Kuo Chu, Wei-Hsin Hsu, Niloy J. Mitra, Daniel                   [29] Jean François Niceron. La perspective curieuse. P. Billaine,
+     Cohen-Or, Tien-Tsin Wong, and Tong-Yee Lee. Camouflage                    Paris, 1638. 1, 2, 7
+     images. ACM Trans. Graph., 29(4), 2010. 2                            [30] Aude Oliva, Antonio Torralba, and Philippe G. Schyns.
+[13] James H. Clark. Hierarchical geometric models for visible                 Hybrid images. In ACM SIGGRAPH 2006 Papers, page
+     surface algorithms. Commun. ACM, 19(10):547–554, 1976.                    527–532, New York, NY, USA, 2006. Association for Com-
+     3, 4                                                                      puting Machinery. 2
+[14] Patrick Esser, Sumith Kulal, Andreas Blattmann, Rahim                [31] Marios Papas, Thomas Houit, Derek Nowrouzezahrai,
+     Entezari, Jonas Müller, Harry Saini, Yam Levi, Dominik                   Markus Gross, and Wojciech Jarosz. The magic lens: Re-
+     Lorenz, Axel Sauer, Frederic Boesel, et al. Scaling recti-                fractive steganography. ACM Transactions on Graphics
+     fied flow transformers for high-resolution image synthesis.               (Proceedings of SIGGRAPH Asia), 31(6), 2012. 2
+
+
+                                                                      9
+[32] Maxine Perroni-Scharf and Szymon Rusinkiewicz. Con-
+     structing printable surfaces with view-dependent appear-
+     ance. In ACM SIGGRAPH 2023 Conference Proceedings,
+     New York, NY, USA, 2023. Association for Computing Ma-
+     chinery. 2
+[33] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya
+     Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry,
+     Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning
+     transferable visual models from natural language supervi-
+     sion. In International conference on machine learning, pages
+     8748–8763. PMLR, 2021. 7
+[34] Anurag Ranjan and Michael J Black. Optical flow estima-
+     tion using a spatial pyramid network. In Proceedings of the
+     IEEE conference on computer vision and pattern recogni-
+     tion, pages 4161–4170, 2017. 3
+[35] Herbert E Robbins. An empirical bayes approach to statis-
+     tics. In Breakthroughs in Statistics: Foundations and basic
+     theory, pages 388–394. Springer, 1992. 3
+[36] Robin Rombach, Andreas Blattmann, Dominik Lorenz,
+     Patrick Esser, and Björn Ommer. High-resolution image
+     synthesis with latent diffusion models. In Proceedings of
+     the IEEE/CVF conference on computer vision and pattern
+     recognition, pages 10684–10695, 2022. 4
+[37] Matthew Tancik. Illusion diffusion: optical illusions us-
+     ing stable diffusion. https://github.com/tancik/
+     Illusion-Diffusion, 2023. 4, 6, 7, 8, 15, 17, 18
+[38] Ugleh.         https : / / www . reddit . com / r /
+     StableDiffusion/comments/16ew9fz/spiral_
+     town _ different _ approach _ to _ qr _ monster/,
+     2023. 2
+[39] Jean-Louis Vaulezard. Perspective cilindrique et conique,
+     concave et convexe ou traité des apparences vueus par le
+     moyen des miroirs. J. Jacquin, Paris, 1630. 2
+[40] Xiaojuan Wang, Janne Kontkanen, Brian Curless, Steve
+     Seitz, Ira Kemelmacher, Ben Mildenhall, Pratul Srinivasan,
+     Dor Verbin, and Aleksander Holynski. Generative powers of
+     ten. arXiv preprint arXiv:2312.02149, 2023. 3
+[41] Yinhuai Wang, Jiwen Yu, and Jian Zhang. Zero-shot image
+     restoration using denoising diffusion null-space model. The
+     Eleventh International Conference on Learning Representa-
+     tions, 2023. 6
+[42] Lance Williams. Pyramidal parametrics. SIGGRAPH Com-
+     put. Graph., 17(3):1–11, 1983. 3, 4
+[43] Jiwen Yu, Yinhuai Wang, Chen Zhao, Bernard Ghanem, and
+     Jian Zhang. Freedom: Training-free energy-guided condi-
+     tional diffusion model. In Proceedings of the IEEE/CVF In-
+     ternational Conference on Computer Vision, pages 23174–
+     23184, 2023. 6
+[44] Lvmin Zhang, Anyi Rao, and Maneesh Agrawala. Adding
+     conditional control to text-to-image diffusion models, 2023.
+     2
+[45] Qinsheng Zhang, Jiaming Song, Xun Huang, Yongxin Chen,
+     and Ming yu Liu. Diffcollage: Parallel generation of large
+     content with diffusion models. In CVPR, 2023. 3
+
+
+
+
+                                                                    10
+      LookingGlass: Generative Anamorphoses via Laplacian Pyramid Warping
+                                                               Supplementary Material
+A. Laplacian Pyramid Warping
+In this section, we provide additional details about Sec. 4.2.
+In Section A.1 and A.2, we illustrate the forward and inverse
+warping with the example of the conic mirror, and cover
+some implementation subtleties for the inverse operation.                               w/o nearest imputation (value = -1)                                                                        w/ nearest imputation (ours)
+Section A.3 explains how we properly blend pyramid levels
+in the case of partial views. Lastly, we provide pseudo-code                           Figure 12. Imputation. We use nearest neighbor imputation for
+for Laplacian Pyramid Warping in Section A.4.                                          pixels in P(x) that has no colors (i.e. did not receive gradients).
+                                                                                       We consider images with values in [-1, 1].
+
+
+
+                                                                                       ter of the cone in the warped view naturally map back to a
+                                                                                       lower frequency band in the identity view, occupying larger
+                                                                                       regions at the boundary in the reconstructed image. Rigor-
+    (a) view setting   (b) identity UV   (c) mirror view UV      (d) LOD levels
+                                                                                       ously speaking, the output of the inverse warping is a Lapla-
+Figure 10. Conic mirror view. Rendering the scene (a) with a                           cian pyramid (see Fig. 14.g), not an image.
+top down camera yields the UV map (c) for the conic mirror case.
+Using Eq. (9), the associated level-of-detail map (d) is computed.
+                                                                                       Implementation details. We provide a more detailed il-
+                                                                                       lustration of the inverse operation in Figure 16. The subfig-
+A.1. Forward Warping                                                                   ures show:
+We consider the conic mirror example and its corresponding                             a) Starting from a dummy pyramid P(x0 ), we perform a
+warping function (Fig. 10). The forward warping operation                                 Laplacian-to-Gaussian pyramid conversion to get G(x0 )
+was explained in Sec. 4.2. Figure 11.b) illustrates the result                            (i.e. reparameterization). Forward warping is then ap-
+of applying forward warping to an image. In Figure 14.b),                                 plied to obtain a warped dummy image ỹ.
+we visualize the pyramid levels in the identity view, high-                            b) An L2 loss is computed between ỹ and y, the image we
+lighting in white the pixels used in the forward warping. For                             wish to warp back. The gradients populate each level of
+instance, pixels closer to the cone’s center are mapped to an                             the dummy pyramid, yielding P(x). The reparameteri-
+outer ring in the identity view. Because the view function is                             zation ensures that gradients from each level flows to all
+locally more compressed for these pixels, they are sampled                                levels above it.
+from a higher level of the pyramid (i.e., lower resolution).                           c) Lastly, we extract the final Laplacian pyramid L(x) from
+                                                                                          P(x) following
+
+                                                                                              \label {eq:suppl_backward} \mathbb L (\mathbf {x}) = \mathbb M (\mathbf {x}) \odot \left ( \mathbb P^* (\mathbf {x}) - \mathbf {U}(\mathbf {D}(\kappa (\mathbb P^* (\mathbf {x}))))\right ),  (11)
+
+                                                                                          where M is a pyramid of binary masks indicating pixels
+                                                                                          that have gradients, P∗ is the result of imputing missing
+                                                                                          values in P with nearest color (more details below).
+        (a) input )            (b) % = '(( ) )                (c) )′ = ' !" (%)
+
+
+Figure 11. Warp example. Given an image (a), we warp it to the                         Imputation. It is important to impute the pixels that re-
+conic mirror view (b), and warp back to the original view (c). Our                     ceived no gradients with meaningful colors. Otherwise, if
+multi-scale approach warps values to different frequency bands                         left black, the pyramid computation will pick up these dis-
+based on the local compression of the view function π.                                 continuities at the mask boundaries as high-frequency de-
+                                                                                       tails, leading to incorrect values in those regions. We opt
+                                                                                       for a simple nearest neighbor imputation that fills pixels
+A.2. Inverse Warping                                                                   that have no gradients with the nearest pixel value. Fig-
+Figure 11.c) shows the result of warping the transformed                               ure 12 illustrates the difference between no imputation (de-
+image back to the identity view: pixels closer to the cen-                             fault value 0) and our nearest imputation.
+
+
+                                                                                  11
+Comparison with baselines. In Figure 13, we compare
+our Laplacian-based inverse warping with standard warp-
+ing using nearest or bilinear interpolation. Because the view
+function has extreme compression around the cone center,                                                                                                                                              (a) input image as Gaussian Pyramid 3(4)
+this translates to missing values on the outer ring when
+warping back with nearest or bilinear, as some pixels in the
+identity view are not sampled during forward warping due
+to the compression. We showed in Fig. 6 that this can lead
+                                                                                                                                                                             (b) forward warping: pixels fetched from 3 4 during warping (highlighted)
+to artifacts in the generated image.
+    It is worth noting that another way to avoid missing val-
+ues could be to do a forward warping with the inverse UV
+map. However, the inverse map is usually not trivial to com-
+pute. Additional problems arise when the mapping is not                                                                                                                 (c) backward warping: intermediate pyramid obtained with backpropagation 3(4)
+
+bijective or has discontinuities, which can be quite tricky to
+solve in a robust way. In contrast, our method automatically
+handles these cases, and only requires the forward UV map,
+which is easily obtainable through simple rendering of the                                                                                                                                       (d) backward warping: propagated pyramid ℙ(4)
+desired view.
+
+
+
+                                                                                                                                                                                              (e) backward warping: computed binary mask @(4)
+
+
+
+
+      (a) nearest                                                     (b) bilinear                                             (c) Laplacian (ours)                  (f) backward warping: pyramid with missing values imputed using nearest value ℙ∗ (4)
+
+
+Figure 13. Backward warping baseline comparison. In regions
+where the view function is compressing, standard interpolation
+like nearest (a) or bilinear interpolation (b) creates holes, while
+our Laplacian Pyramid Warping ensures smooth results (c).                                                                                                              (g) backward warping: final Laplacian pyramid returned by backward warping C(4)
+
+
+                                                                                                                                                                   Figure 14. Intermediate pyramids. We visualize some interme-
+A.3. Pyramid Blending                                                                                                                                              diate pyramids that appear in forward (a, b) and backward warping
+                                                                                                                                                                   (c-g). Refer to the text and Fig. 16 for more context.
+As explained in Sec. 4.2, special care needs to be taken
+when blending the pyramids.
+                                                                                                                                                                   Detail-preserving averaging. Another issue with averag-
+Blending with partial views. In standard Laplacian Pyra-                                                                                                           ing in general is that it reduces variance and washes out
+mid Blending, the blended pyramid is obtained by averag-                                                                                                           details. While this is already improved with the Laplacian
+ing each level of the input pyramids. Given two pyramids                                                                                                           pyramid, averaging still leads to the loss of sharp details.
+L0 , L1 , the level k of the blended pyramid L is given by:                                                                                                        Given two pixel values x, y ∈ [−1, 1], we define a normal
+                                                                                                                                                                   averaging avg and a value-weighted averaging vavg:
+                                                   \mathbb L_k = \frac {1}{2} \left (\mathbb L_k^0 + \mathbb L_k^1\right ).                            (12)
+                                                                                                                                                                     \label {eq:suppl_vavg} \texttt {avg}(x,y) = \frac {1}{2}(x+y), \ \texttt {vavg}(x,y) = \frac {|x|x + |y|y}{|x|+|y|}    (14)
+   In our case, Laplacian pyramids come from inverse
+warping of views, and might look like Fig. 11.c), with miss-
+                                                                                                                                                                      The value-weighted average will give more weights to
+ing values. In this case, the average should only be com-
+                                                                                                                                                                   extreme pixel values, hence preserving better the value
+puted over defined pixels. Assuming each level Lk is asso-
+                                                                                                                                                                   range. In the results shown, we linearly interpolate between
+ciated with a binary mask Mk , the blending is:
+                                                                                                                                                                   the two types of averaging through a parameter α ∈ [0, 1]:
+        \mathbb L_k = \frac {1}{\mathbb M_k^0 + \mathbb M_k^1}\left (\mathbb M_k^0 \odot \mathbb L_k^0 + \mathbb M_k^1 \odot \mathbb L_k^1\right ).    (13)               \label {eq: alpha_interp} z = \texttt {avg}(x, y) + \alpha (\texttt {vavg}(x, y) - \texttt {avg}(x, y)).          (15)
+
+   In practice, we map missing values to torch.nan, and                                                                                                               Figure 15 shows the effect of α for two examples with
+use torch.nanmean() to perform averaging.                                                                                                                          the cylinder mirror. When standard averaging is used (α =
+
+
+                                                                                                                                                              12
+                                     ! = 0.0   ! = 0.25   ! = 0.5   ! = 0.75   ! = 1.0    1
+                                                                                          2   def _get_grid(warp, maxLOD):
+an expressive charcoal painting of
+ a snow-covered mountain range
+
+
+                                                                                          3       """
+                                                                                          4       Takes in numpy array warp of shape (1, 3, 1024, 1024)
+                                                                                          5       """
+                                                                                          6       # compute lod and normalize to (-1, 1)
+                                                                                          7       mapping = 1024 * warp[:, :2]
+                                                                                          8       lod = _compute_lod_level(mapping, maxLOD=maxLOD)
+                                                                                          9       lod = 2 * lod / maxLOD - 1.0 # (h, w)
+                                                                                         10       lod = lod.unsqueeze(0).unsqueeze(-1)
+                                                                                         11
+                                                                                         12      # normalize uv to (-1, 1)
+                                                                                         13      grid = torch.tensor(warp[:, :2]).permute(0, 2, 3, 1)
+an expressive charcoal painting
+
+
+
+
+                                                                                         14      mask = torch.all(grid == 0.0, dim=-1, keepdim=True)
+                                                                                         15      mask = mask.expand(-1, -1, -1, 2)
+                                                                                                 grid[mask] = torch.nan # replace undefined with NaN
+        of a polar bear
+
+
+
+
+                                                                                         16
+                                                                                         17      grid = 2 * grid - 1
+                                                                                         18
+                                                                                         19      # combine into a 3D coordinate grid (lod, u, v)
+                                                                                         20      grid = torch.cat([lod, grid], -1).unsqueeze(1)
+                                                                                         21      return grid # (1, 1, dim, dim, 3)
+                                                                                         22
+                                                                                         23
+                                     ! = 0.0   ! = 0.25   ! = 0.5   ! = 0.75   ! = 1.0   24   def view(lp, warp, leveln):
+                                                                                         25       # get 3d coordinate grid
+                                                                                         26       grid = _get_grid(warp, maxLOD=leveln-1)
+a snowy mountain village
+
+
+
+
+                                                                                         27
+                                                                                                 # sample values
+    an oil painting of
+
+
+
+
+                                                                                         28
+                                                                                         29      layers = pyrStack(lp, dim=-1)
+                                                                                         30      new_im = F.grid_sample(
+                                                                                         31          layers,
+                                                                                         32          grid,
+                                                                                         33          mode='nearest',
+                                                                                         34          padding_mode="zeros",
+                                                                                         35          align_corners=True,
+                                                                                         36      ).squeeze(2)
+                                                                                         37
+                                                                                         38      # replace by NaN where image is 0
+                                                                                         39      new_im[new_im == 0.0] = torch.nan
+an oil painting
+of an old man
+
+
+
+
+                                                                                         40      new_im = torch.nanmean(new_im, 0).half()
+                                                                                         41      return new_im
+                                                                                         42
+                                                                                         43
+                                                                                         44   def inverse_view(im, warp, leveln):
+                                                                                         45       c, h, w = im.shape
+                                                                                         46       grid = _get_grid(warp, maxLOD=leveln - 1)
+                                                                                         47       with torch.enable_grad():
+                                                                                                      # create an empty pyramid
+Figure 15. Effects of parameter α. The parameter affects how 48      49                               opt_var = torch.zeros(1, c + 1, h, w)
+views are merged together at each level of the pyramid. α = 0 cor- 50                                 opt_var = LaplacianPyramid(opt_var, leveln)
+responds to standard average, while α = 1 gives more weights to 51                                    for lvl in opt_var:
+                                                                     52                                   lvl.requires_grad_()
+pixels with extreme values, preserving the details in all the views. 53
+                                                                                         54          # convert to Gaussian pyramid
+                                                                                         55          opt_gp = Laplacian2Gaussian(opt_var)
+                                                                                         56          target = torch.cat([im, torch.ones_like(im[:1])])
+0), the image looks blurrier. However, when value-weighted 57                                        layers = pyrStack(opt_gp, -1).float()
+                                                                                                     warped = F.grid_sample(
+average is used (α = 1), all details from both views are 58 59                                           layers,
+preserved, creating very saturated, over-sharpened results. 60                                           grid,
+                                                                                                         mode='nearest',
+In most of our results, we opt for α ∈ [0.25, 0.5].         61
+                                                            62                                           padding_mode="zeros",
+                                                                                         63              align_corners=True,
+A.4. Pseudo-code                                                                         64          ).squeeze(2)
+                                                                                         65          loss = 0.5 * ((warped - target) ** 2).sum()
+We provide a pseudo-code for our novel Laplacian Pyramid 66                                          loss.backward()
+                                                         67                                          result = [-l.grad.detach() for l in opt_var]
+warping. Some notes:                                     68                                          result = [(r[:, :c] / r[:, -1:]) for r in result]
+                                                                                         69
+• l.8: compute lod level returns the LOD level map 70                                            # extract laplacian pyramid
+  as a (H, W ) tensor using Equation (9);          71                                            for k in range(leveln - 1):
+                                                                                         72          mask = torch.isnan(result[k])
+                                                                                         73          imputed = impute_with_nearest(result[k], ˜mask)
+• l.29: pyrStack takes a pyramid, upsamples all levels 74                                            result[k] = imputed - pyrUp(pyrDown(imputed))
+                                                            75                                       result[k][mask] = torch.nan
+  to highest resolution, and stacks them along a dimension; 76
+                                                                                         77      return result
+                                                                                         78
+• l.73: impute with nearest fills missing values with
+  nearest ones in the image given the mask.
+
+
+                                                                                         13
+                                                                           impute values w/ nearest
+                                                                                                                 kernel blur
+                                                                     compute mask
+
+
+
+
+                            (a) dummy forward pass
+                                                                                                 ⊙                  −                 =
+
+
+                                                              ℙ(#)                  &(#)                  ℙ∗ (#)     '((()(ℙ∗ )))         %(#)
+
+                           (b) gradient backward pass                                        (c) Laplacian pyramid extraction
+
+Figure 16. Detailed look at inverse warping. We provide an illustration to Equation (10), explaining how to obtain the final Laplacian
+pyramid using back-propagation, as mentioned in the main paper.
+
+
+B. Additional Ablations                                                                      !=1         !=2          !=3       !=5       !=8
+
+
+We provide more qualitative ablations to show the effects of
+Laplacian warping, view prioritization, and time travel.
+                                                                                    seed 0
+
+
+
+
+B.1. Prioritizing a Single View
+In Section 4.3, we proposed to let the last x% of the de-
+noising process only denoise a single one of the views. Fig-
+ure 17 shows the effect of varying values of x for an exam-
+ple with 90◦ rotation. As the ratio increases, details from
+the first view (“a snowy mountain village”) dominate over
+                                                                                    seed 1
+
+
+
+
+the second view (“a horse”). This is a useful parameter to
+control the trade-off between views.
+
+                           0%            20%            30%   50%
+
+                                                                                Figure 18. Time travel. We show the effect of time traveling for
+a snowy mountain village
+
+
+
+
+                                                                                the flip example (“a giraffe head” / “a penguin”) with two differ-
+                                                                                ent sampled seeds. Time traveling is only applied for timesteps
+                                                                                between 20% and 80%, by repeating each step N times.
+
+
+
+                                                                                B.2. Time travel
+                                                                                We show in Figure 18 that time traveling is an effective
+a horse
+
+
+
+
+                                                                                strategy for improving image consistency and blending be-
+                                                                                tween views. Without time traveling (N = 1), the pen-
+                                                                                guin and the giraffe head seem like two independent enti-
+                                                                                ties overlayed on top of each other in the image. As the
+Figure 17. Prioritizing a single view. We show the effect of prior-             repeating number N increases, the two views align better,
+itizing the first view (“a snowy mountain village”) over the second             resulting in a sharper image with more coherent details.
+(“a horse”) in the example of 90◦ rotation.
+                                                                                    Obviously, runtime scales linearly with the repeating
+                                                                                number. In Burgert et al. [4], image quality and blend-
+
+
+                                                                          14
+ing quality are entangled, and improving with the number                                       Anagrams’ paper [18], and from querying ChatGPT. For
+of optimization steps. Here, time traveling is only responsi-                                  each method, we generate 10 samples per prompt pair. This
+ble for blending quality, but is independent of the generated                                  results in 500 pairs of images, i.e. 1k images per method.
+image quality. We believe this provides a more intuitive                                       For FID/KID computation, we generated a reference dataset
+control parameter than the number of optimization steps.                                       comprised of 3.2k images from SD3 and 3.2k images from
+    Naturally, better blending still yields better overall qual-                               SD3.5 following the same prompts (only single view).
+ity, which explains the lower FID in Table 2. However, it
+seems to come at the cost of slightly worse prompt align-
+                                                                                               Comparing with prior work. For Visual Anagrams [18],
+ment. We hypothetize that blending better means making
+                                                                                               we used the original codebase from Geng et al.: https:
+more compromise between views, which in turn makes it
+                                                                                               //github.com/dangeng/visual_anagrams. Re-
+harder to match the prompts as well.
+                                                                                               sults are generated with DeepFloyd IF [1] in two stages, and
+   Baseline   + LPW (. = 0)   + LPW (. = 0.25)   + Time Travel (N=5)   + Prioritize 20%        subsequently up-sampled to 1024 × 1024 using Stable Dif-
+                                                                                               fusion x4 Upscaler, as provided by the code.
+                                                                                                  For Burgert et al. [4], we used the available code-
+                                                                                               base at (https://github.com/RyannDaGreat/
+                                                                                               Diffusion-Illusions) and added a function to ro-
+                                                                                               tate the inner circle of an image by 135◦ . Each image is
+                                                                                               generated with 1000 optimization steps using Stable Diffu-
+                                                                                               sion v1.4, the default model from their codebase.
+                                                                                                  Lastly, we set the hyperparameters of our pipeline to
+                                                                                               replicate the original implementation of Tancik [37] and
+                                                                                               SyncTweedies [23]. The results are generated with Stable
+                                                                                               Diffusion 3.5 Medium, as in our method.
+
+
+                                                                                               Runtime. We generate our results with Stable Diffusion
+                                                                                               3.5 Medium on a Nvidia GeForce RTX 4090 GPU. With 30
+                                                                                               steps of inference and time traveling between 20% and 80%
+                                                                                               repeating 2 times, we can generate an image pair in ∼ 80s.
+Figure 19. Baseline ablation. We consider the cone mirror ex-
+ample with two views (“a tropical jungle forest”-“a raccoon”.
+We show successively the effect of Laplacian Pyramid Warping                                    Geng et al. [18]   Tancik et al. [37]   SyncTweedies [23]   Burgert et al. [4]   Ours SD 3.5
+
+(LPW), value-weighted average (α), time traveling, and single-                                       18.6s               17.2s                18.8s              176.0s             79.4s
+
+view prioritization.
+                                                                                                                   Table 3. Inference time comparison.
+
+B.3. Comparison with Baseline
+Lastly, we show in Figure 19 the effects of these different                                    D. Using Other Latent Models
+features. Laplacian Pyramid Warping addresses the arti-
+facts at the edge of the ring, visible in the baseline. Value-                                 Most of our results were generated using Stable Diffusion
+weighted average recovers sharp details lost in standard av-                                   3.5. However, we also experimented with other models such
+eraging. Time traveling ensures a smoother blending, while                                     as SD2.1 and SDXL.
+single-view prioritization adds back the final details in the                                      Here, we show a simple experiment with two identity
+identity view without destroying the second view.                                              views associated with two distinct prompts. This way, we
+                                                                                               abstract out the VAE, as well as other problems that come
+C. Quantitative Evaluation Details                                                             from warping. The results are shown in Figure 20 for two
+                                                                                               pairs of prompts. Interestingly, even in such a simple set-
+We provide additional details regarding the quantitative                                       ting, not all models behave the same: SD2.1 tend to gener-
+evaluation in this section.                                                                    ate images with poor quality, while SD3+ attempts to blend
+                                                                                               the two concepts by compositing them as much as possible.
+Dataset generation. Similar to Geng et al. [18], we use a                                      Curiously, SDXL seems to blend the concepts semantically:
+custom list of 50 prompt pairs in the form of [<style>,                                        “a snowy mountain village” and “a horse” give horses in a
+<prompt1>, <prompt2>] for our quantitative evalua-                                             village, while “people at a campfire” and “an old man” pro-
+tion. These are a mix between prompt pairs from Visual                                         duce “old men at a campfire”.
+
+
+                                                                                          15
+   While intriguing, this is not ideal for ambiguous images,                                                                     comparison, we first display the results in high resolution
+as the goal is more to blend spatially the different views.                                                                      before asking users to rank them (see Fig. 21).
+Further investigation is needed to explain the discrepancy
+between SDXL and SD3+, possibly due to the switch from                                                                           Ranking criteria. Participants are asked to provide a
+diffusion to flow matching or from U-Net to a transformer                                                                        ranking of the five methods from 1 (best) to 5 (worst). At
+backbone. A deeper study is left for future work.                                                                                the beginning of the study, they are instructed to evaluate
+                                                                                                                                 the images based on the following criteria:
+                                     (a) SD2.1 (CFG=7.5)   (b) SDXL (CFG=10.0)   (c) SD3 (CFG=10.0)   (d) SD3.5 (CFG=4.5)
+                                                                                                                                 • Match both text prompts: When viewed directly (resp.
+                                                                                                                                   through a mirror or lens), the image should correspond to
+                                                                                                                                   the first (resp. second) prompt.
+                                                                                                                                 • Maintain the specified style: The image should adhere
+                                                                                                                                   to the given style prompt (e.g. painting, photograph).
+a snowy mountain village / a horse
+
+
+
+
+                                                                                                                                 • Be high-quality: The final image should be sharp, de-
+                                                                                                                                   tailed, and visually appealing.
+
+                                                                                                                                 F. Failed Experiments
+                                                                                                                                 Relative negative prompting. In Visual Anagrams [18],
+                                                                                                                                 the authors note that including other views in the negative
+                                                                                                                                 prompt does not improve substantially the visual quality.
+                                                                                                                                 Moreover, prompt conflicts can arise. For example, the
+                                                                                                                                 prompts “an oil painting of a village” and “an oil painting
+                                                                                                                                 of a horse” both share the style descriptor “an oil painting
+                                                                                                                                 of”, which should not be included in the negative prompt.
+people at a campfire / an old man
+
+
+
+
+                                                                                                                                 Similarly, prompts like “a cat” and “a dog” share features
+                                                                                                                                 such as fur. If these shared features appear in both the nega-
+                                                                                                                                 tive and positive prompts, it can lead to suboptimal results.
+                                                                                                                                    We experimented with a variant of this, which we dub
+                                                                                                                                 relative negative prompting. The idea is to put in the neg-
+                                                                                                                                 ative prompt only the relative direction between the posi-
+                                                                                                                                 tive prompt (from the current view) and the negative prompt
+                                                                                                                                 (from the other view). Thus, we subtract the positive prompt
+                                                                                                                                 embedding from the negative one. Our experiments showed
+Figure 20. Comparing different models for two-view setting.
+                                                                                                                                 that this removes the need to manually select which part to
+We consider the case of two identity views, associated with two
+distinct prompts. While most models blend the two concepts spa-
+                                                                                                                                 keep for the negative prompt. In the example of the shared
+tially, SDXL seems to blend them semantically.                                                                                   style, our difference vector cancels it out automatically, and
+                                                                                                                                 the model is thus still able to generate the correct style.
+                                                                                                                                 However, similar to Geng et al. [18], we did not observe
+                                                                                                                                 substantial improvement using this method.
+E. User Study
+As mentioned in Section 5.5, we conducted a user study                                                                           G. Choosing Prompts & Failure Cases
+over 27 participants to compare human preferences between                                                                        The quality of the generation relies on choosing a good style
+our proposed method and existing prior work.                                                                                     and pair of prompts. Here are some tips we found for gen-
+                                                                                                                                 erating good anamorphoses:
+Study structure. The study consists of three sections,                                                                           1. a place or location (e.g. jungle, desert, library etc.) gives
+each corresponding to a different type of anamorphosis:                                                                             a lot of freedom to the composition and generally works
+cylindrical mirror, conic mirror, and Niceron’s lens. Each                                                                          well for the identity view;
+section begins with an example image and video demon-                                                                            2. the second view is generally seen through some mirror
+strating how the illusion works. Participants are then shown                                                                        or a lens, which is smaller than the main image. For this
+10 different samples generated from 10 pairs of prompts.                                                                            view, easily recognizable subjects like animals or faces
+These prompts remain the same across all three sections to                                                                          are good prompts in most cases;
+avoid bias. Additionally, the order in which the methods are                                                                     3. artistic styles are more prone to produce good results
+presented is randomized for each sample. To ensure a fair                                                                           than photorealistic styles;
+
+
+                                                                                                                            16
+                                                        4. styles with no colors (e.g. sketches, ink, marble sculp-
+                                                           ture) will generate better results when the two prompts
+                                                           have very different color palettes.
+
+                                                           Our method is still prone to fail in certain cases. For
+Start of the section:
+example image pair
+                                                        example, the model can still cheat and put all the views in
+ and video showing                                      the image without properly blending them (see Figure 22).
+  the illusion type
+
+
+
+
+                                                        Figure 22. Failure case. Similar to Geng et al., our method can
+                                                        cheat and put both views in the image without properly mixing
+                                                        them. In this example, the shark from the cylinder mirror view can
+                                                        be seen in the sky behind the wind turbines.
+
+
+
+                                                        H. Concurrent Work
+ Image sample pairs
+from five methods in                                    After our initial submission, a preprint titled “Illusion3D:
+  high resolution for
+    better viewing
+                                                        3D Multiview Illusion with 2D Diffusion Priors” [16] ap-
+                                                        peared on arXiv, addressing a similar problem. While their
+                                                        code is not available at the time of writing, we identified a
+                                                        few key differences between our method and theirs.
+                                                            First, Illusion3D builds on optimization-based ap-
+                                                        proaches like Burgert et al. [4], whereas our method im-
+                                                        proves upon feedforward techniques [18, 37], generating
+                                                        images in a single inference pass. Their approach re-
+                                                        places Score Distillation Sampling (SDS) [4] with Varia-
+                                                        tional Score Distillation (VSD), which requires training a
+                                                        LoRA module during optimization. Due to the inherent
+                                                        limitations of score distillation methods, we believe our ap-
+                                                        proach produces higher-quality images while supporting a
+                                                        broader range of styles, from artistic to photorealistic, as
+                                                        demonstrated in Section I.
+                                                            A key advantage of Illusion3D, however, is its ability
+                                                        to generate full 3D structures, which our method does not
+  Users are asked to                                    support. That said, our approach can still generate 2D tex-
+rank the five samples                                   tures for mapping onto 3D surfaces, similar to their sphere
+    based on text-                                      or cube illusions. Lastly, we expect our method to have sig-
+ prompt adherence,
+ style matching, and                                    nificantly lower generation time and memory requirements
+overall visual quality                                  compared to Illusion3D.
+
+                                                        I. Additional Results
+                                                        In the next pages, we show additional qualitative results
+                                                        for the three anamorphic views: cylinder mirror, conic mir-
+          Figure 21. Sample from the user study.        ror, and Nicéron’s lens. Please refer to the supplementary
+                                                        videos to see these anamorphoses in action. Table 4 shows
+                                                        additional quantitative evaluations.
+
+
+                                                   17
+                        Method                       S↑      S0.9 ↑      A↑      A0.9 ↑      C↑      C0.9 ↑      FID ↓    KID ↓
+                        Geng et al. [18]            0.325    0.362       0.306    0.340     0.695     0.786      149.24    0.057
+                        Tancik SD 3.5 [37]          0.328    0.367       0.306    0.349     0.693     0.806      132.52    0.049
+          Vertical
+                        Burgert et al. [4]          0.303    0.347       0.281    0.324     0.679     0.778      219.84    0.115
+           Flip
+                        SyncTweedies [23]           0.323    0.360       0.302    0.341     0.707     0.801      132.62    0.054
+                        LookingGlass (ours)         0.320    0.358       0.297    0.338     0.680     0.779      124.67    0.049
+                        Geng et al. [18]            0.284    0.340       0.262    0.308     0.563     0.652      293.00    0.254
+                ◦       Tancik SD 3.5 [37]          0.203    0.225       0.194    0.216     0.498     0.509      439.35    0.545
+           135
+                        Burgert et al. [4]          0.301    0.347       0.280    0.326     0.654     0.760      223.21    0.120
+          Rotation
+                        SyncTweedies [23]           0.308    0.354       0.283    0.335     0.647     0.753      166.03    0.083
+                        LookingGlass (ours)         0.319    0.357       0.295    0.338     0.666     0.767      129.74    0.055
+                     Geng et al. [18]               0.190    0.228       0.171    0.198     0.506     0.546      285.23    0.216
+                     Tancik SD 3.5 [37]             0.189    0.225       0.171    0.198     0.505     0.547      284.97    0.215
+         Cylindrical
+                     Burgert et al. [4]             0.285    0.334       0.261    0.304     0.706     0.795      229.65    0.138
+          Mirror
+                     SyncTweedies [23]              0.285    0.348       0.241    0.284     0.673     0.763      138.69    0.082
+                     LookingGlass (ours)            0.307    0.360       0.272    0.318     0.698     0.810      130.27    0.070
+
+Table 4. Additional quantitative comparison. We additionally assess image-prompt alignment using CLIP similarity score S on all three
+transformations evaluated in the main paper. While all methods achieve comparable results for the vertical flip, LookingGlass surpasses
+previous approaches on more complex transformations, including anamorphoses.
+
+
+
+
+                      circle rotation 135°                                                       vertical flip
+
+
+
+
+                                           a painting of… a table / waterfalls
+
+
+
+
+                           a watercolor painting of… a ship / a village in the mountains
+
+
+
+
+                           a watercolor painting of… a horse / a snowy mountain village
+
+Figure 23. 2D transform results. Here are some generated results for the two 2D transforms: vertical flip, and 135◦ rotation (not supported
+by Geng et al. [18]).
+
+
+
+
+                                                                    18
+                   a cinematic rendering of                                                an oil painting of
+              rolling hills in golden light / turtle                             sunlit canyon with straight cliffs / bull
+
+
+
+
+                      an oil painting of                                                   a clay sculpture of
+               desert dunes at sunset / jellyfish                                      cobblestone street / cheetah
+
+
+
+
+                    a charcoal drawing of                                                  a paper collage of
+            flower garden with rows of tulips / fox                                        mountain pass / lion
+
+Figure 24. Cylinder mirror anamorphosis. In this figure and the two following ones, we show additional results for the cylinder mirror
+example. Each example contains the identity view, the mirror view as predicted by the flow model, and a rendering of the actual physical
+setting to validate our examples. Kindly refer to the supplementary videos to see these results in action.
+                                                                  19
+   an ink wash drawing of        an ink wash drawing of         a watercolor painting of        a watercolor painting of
+      straight ski tracks                iguana                      desert plateau                       seal
+
+
+
+
+      a LEGO model of              a LEGO model of                 a clay sculpture of             a clay sculpture of
+      cobblestone street               cheetah                      aquarium tunnel                     polar bear
+
+
+
+
+     a fresco painting of         a fresco painting of               an oil painting of             an oil painting of
+       aquarium tunnel              knight’s helmet            straight levee dividing water               otter
+
+
+
+
+        a diorama of                 a diorama of                  a low-poly model of             a low-poly model of
+   dense tropical rainforest            panther                    sunlit rocky outcrop                    fox
+
+
+
+
+    a fresco painting of          a fresco painting of             a clay sculpture of             a clay sculpture of
+   mirror-like frozen pond                 bat                  flower meadow at sunrise                 iguana
+
+
+
+
+    a comic book panel of        a comic book panel of               a lithograph of                 a lithograph of
+     sunlit rocky outcrop                turtle                      frozen waterfall                     cougar
+
+
+
+
+       an oil painting of          an oil painting of          a hyperrealistic sculpture of   a hyperrealistic sculpture of
+highland moor with stone walls         hedgehog                       windy desert                       walrus
+
+
+
+
+                                                          20
+an ink wash drawing of      an ink wash drawing of   a watercolor painting of           a watercolor painting of     a watercolor painting of      a watercolor painting of
+   straight ski tracks              iguana           snow-covered green trees                  hedgehog                   desert plateau                     seal
+
+
+
+
+   a LEGO model of            a LEGO model of        a photorealistic painting          a photorealistic painting       a clay sculpture of           a clay sculpture of
+   cobblestone street             cheetah                 of desert oasis                        of bat                  aquarium tunnel                   polar bear
+
+
+
+
+  a fresco painting of       a fresco painting of        a LEGO model of                   a LEGO model of            a charcoal drawing of         a charcoal drawing of
+    aquarium tunnel            knight’s helmet          medieval castle gate                     ant                   sunlit rocky outcrop                 seal
+
+
+
+
+a charcoal drawing of       a charcoal drawing of     an oil painting of sunlit            an oil painting of        an oil painting of straight      an oil painting of
+ sunlit rocky outcrop               seal             canyon with straight cliffs                  bull                 levee dividing water                  otter
+
+
+
+
+   an oil painting of         an oil painting of          a diorama of                        a diorama of              a clay sculpture of           a clay sculpture of
+ desert dunes at sunset            jellyfish         dense tropical rainforest                   panther                cobblestone street                  cheetah
+
+
+
+
+an ink wash drawing of      an ink wash drawing of     a low-poly model of                a low-poly model of         a charcoal drawing of         a charcoal drawing of
+horizon of a wheat field             frog              sunlit rocky outcrop                       fox                sunlit canyon with cliffs             panther
+
+
+
+
+ a charcoal drawing of      a charcoal drawing of       a clay sculpture of                a clay sculpture of         a charcoal drawing of        a charcoal drawing of
+sunlit canyon with cliffs          panther           flower meadow at sunrise                    iguana              flower garden with tulips               fox
+
+
+
+
+   a line drawing of          a line drawing of      a cubist interpretation of         a cubist interpretation of      a paper collage of            a paper collage of
+ desert dunes at sunset              horse              desert canyon floor                        eagle                  mountain pass                      lion
+
+
+
+
+    a lithograph of            a lithograph of           a bronze statue of                a bronze statue of          a metal engraving of          a metal engraving of
+    frozen waterfall                cougar                mangrove forest                       cougar                rooftops of a dense city                fox
+
+
+
+
+ a metal engraving of        a metal engraving of     oil painting of highland               oil painting of         a hyperrealistic sculpture    a hyperrealistic sculpture
+rooftops of a dense city              fox              moor with stone walls                    hedgehog                  of windy desert                 of walrus
+
+                                                                                   21
+                     a clay sculpture of                                                  a pixel art version of
+                 aquarium tunnel / polar bear                                         flower petals close-up / canoe
+
+
+
+
+                  a stained glass depiction of                                              a 3D rendering of
+                     straight coastline / lion                                        straight ski tracks / polar bear
+
+
+
+
+                    a cinematic rendering of                                            a pointillism painting of
+                icy cave with stalactites / parrot                              straight canal lined with trees / butterfly
+
+Figure 27. Conic mirror anamorphosis. In this figure and the two following ones, we show additional results for the conic mirror
+example. Each example contains the identity view, the mirror view as predicted by the flow model, and a rendering of the actual physical
+setting from the top to validate our examples. Kindly refer to the supplementary videos to see these results in action.
+                                                                  22
+     a clay sculpture of             a clay sculpture of                a comic book panel of           a comic book panel of
+      aquarium tunnel                     polar bear                     medieval castle gate                  octopus
+
+
+
+
+     a clay sculpture of             a clay sculpture of             a hyperrealistic sculpture of   a hyperrealistic sculpture of
+     cobblestone street                    cheetah                        straight ski tracks                motorcycle
+
+
+
+
+a shadow puppet silhouette of   a shadow puppet silhouette of             a fresco painting of           a fresco painting of
+     desert canyon floor                   otter                        flower petals close-up                   bull
+
+
+
+
+a hyperrealistic sculpture of   a hyperrealistic sculpture of         a wireframe rendering of        a wireframe rendering of
+  icy cave with stalactites                 fox                         desert dunes at sunset                  bull
+
+
+
+
+ a stained glass depiction of    a stained glass depiction of            a low-poly model of             a low-poly model of
+       aquarium tunnel                      rabbit                         straight coastline                   wolf
+
+
+
+
+  a cinematic rendering of        a cinematic rendering of           a black-and-white photo of      a black-and-white photo of
+  flower meadow at sunrise                iguana                          aquarium tunnel                     reindeer
+
+
+
+
+       a 16-bit sprite of             a 16-bit sprite of              a cut-paper silhouette of       a cut-paper silhouette of
+    flower petals close-up                  eagle                          volcanic crater                     macaw
+
+
+
+
+                                                                23
+a stained glass depiction     a stained glass depiction     a chalkboard drawing of          a chalkboard drawing of           a diorama of                  a diorama of
+    of spiral staircase             of hermit crab               open-pit mine                         bee                 icebergs in the ocean                 shark
+
+
+
+
+ a comic book panel of         a comic book panel of          a marble carving of              a marble carving of        a ceramic tile mural of       a ceramic tile mural of
+  sunlit rocky outcrop                 turtle                 city skyline at night                  horse                     windy desert                 knight’s helmet
+
+
+
+
+a stained glass depiction     a stained glass depiction     a stained glass depiction        a stained glass depiction     a low-poly model of           a low-poly model of
+of shipyard with cranes               of lantern            of shipyard with cranes                  of lantern          meandering river in valley          hermit crab
+
+
+
+
+    a diorama of                    a diorama of               a 3D rendering of                a 3D rendering of           a 3D rendering of             a 3D rendering of
+  medieval castle gate             knight’s helmet               volcanic crater                    polar bear                volcanic crater                 polar bear
+
+
+
+
+a steampunk illustration      a steampunk illustration      low-poly model of beach,            low-poly model of            an oil painting of            an oil painting of
+  of straight ski tracks         of komodo dragon              shoreline & waves                  fountain statue         icy cave with stalactites            butterfly
+
+
+
+
+ a digital illustration of     a digital illustration of    a minimalist illustration        a minimalist illustration    a holographic image of        a holographic image of
+    aquarium tunnel                     canoe                of industrial pipeline               of polar bear             sunlit rocky outcrop               jellyfish
+
+
+
+
+    a fresco painting of         a fresco painting of       a minimalist illustration        a minimalist illustration     a low-poly model of           a low-poly model of
+  flower petals close-up                gorilla                of mountain pass                     of zebra                  open-pit mine                    octopus
+
+
+
+
+  a comic book panel of        a comic book panel of        a cinematic rendering of         a cinematic rendering of       a marble carving of          a marble carving of
+ icy cave with stalactites             wolf                       ocean waves                         horse                    desert oasis                komodo dragon
+
+
+
+
+  a marble carving of           a marble carving of          a surrealist painting of        a surrealist painting of    a futuristic concept art of   a futuristic concept art of
+     desert oasis                 komodo dragon                  mountain ridge                      octopus                   bamboo forest                        fox
+
+
+
+
+a futuristic concept art of   a futuristic concept art of       a 16-bit sprite of              a 16-bit sprite of          a line drawing of              a line drawing of
+      bamboo forest                        fox                   mountain pass                       gecko                mirror-like frozen pond                lizard
+
+                                                                                        24
+                       a 16-bit sprite of                                                     a lithograph of
+                      desert oasis / dragon                                           horizon of a wheat field / rabbit
+
+
+
+
+                     a vintage poster of                                               a hyperrealistic sculpture of
+                dense tropical rainforest / deer                                      straight ski tracks / motorcycle
+
+
+
+
+                 a hyperrealistic sculpture of                                               a pencil sketch of
+                    windy desert / walrus                                                    harbor pier / lion
+
+Figure 30. Nicéron’s lens anamorphosis. In this figure and the two following ones, we show additional results for the lens example. Each
+example contains the identity view, the lens view as predicted by the flow model, and a rendering of the actual image through the lens to
+validate our examples. Kindly refer to the supplementary videos to see these results in action.
+                                                                   25
+      an ink wash drawing of            an ink wash drawing of                    a LEGO model of                    a LEGO model of
+         straight ski tracks                    iguana                            cobblestone street                     cheetah
+
+
+
+
+          an oil painting of               an oil painting of                        a photo of                         a photo of
+  sunlit canyon with straight cliffs              bull                              glacier valley                      excavator
+
+
+
+
+        a low-poly model of               a low-poly model of                   a pixel art version of             a pixel art version of
+        icebergs in the ocean                   dragon                            aquarium tunnel                         alligator
+
+
+
+
+       a digital illustration of        a digital illustration of             a chalkboard drawing of            a chalkboard drawing of
+beach with straight shoreline & waves              fox                             bamboo forest                         lobster
+
+
+
+
+        a low-poly model of               a low-poly model of                an embroidered version of           an embroidered version of
+          straight coastline                     wolf                        rolling hills in golden light                 frog
+
+
+
+
+          a pencil sketch of               a pencil sketch of                     a pastel artwork of               a pastel artwork of
+    castle walls with battlements                deer                    straight dirt road through a savannah            cheetah
+
+
+
+
+      a cinematic rendering of          a cinematic rendering of                a marble carving of                 a marble carving of
+            ocean waves                          horse                         horizon of a wheat field                   cougar
+
+
+
+
+                                                                    26
+ an ink wash drawing of        an ink wash drawing of      a cinematic rendering of          a cinematic rendering of       a pixel art version of       a pixel art version of
+    straight ski tracks                iguana                    windy desert                        wagon                  medieval castle gate              wine bottle
+
+
+
+
+    a 16-bit sprite of            a 16-bit sprite of         a low-poly model of               a low-poly model of         a surrealist painting of     a surrealist painting of
+       desert oasis                    dragon                sunlit rocky outcrop                      fox                  levee dividing water                  goat
+
+
+
+
+   a paper collage of            a paper collage of          a pixel art version of            a pixel art version of     a surrealist painting of      a surrealist painting of
+   cliffside lighthouse                lizard                  aquarium tunnel                        alligator           dense tropical rainforest            hedgehog
+
+
+
+
+  a vintage poster of            a vintage poster of       a hyperrealistic sculpture        a hyperrealistic sculpture     a low-poly model of           a low-poly model of
+dense tropical rainforest               deer                 of straight ski tracks               of motorcycle                 castle walls                     canoe
+
+
+
+
+   a marble carving of          a marble carving of             a lithograph of                   a lithograph of            a paper collage of            a paper collage of
+     highland moor                    cougar                    bamboo forest                         elephant            urban bridge over a river              statue
+
+
+
+
+ a neon light artwork of       a neon light artwork of     a vintage poster of rows             a vintage poster of       an embroidered version        an embroidered version
+ urban basketball court                bicycle                   of palm trees                         frog                 of grassy meadow                  of parrot
+
+
+
+
+ a digital illustration of     a digital illustration of   a cinematic rendering of          a cinematic rendering of     a watercolor painting of      a watercolor painting of
+     mountain ridge                     panda                    ocean waves                          horse                 medieval castle gate                 hawk
+
+
+
+
+  a pixel art version of        a pixel art version of     a photorealistic painting         a photorealistic painting        a 16-bit sprite of           a 16-bit sprite of
+ forest, tall straight trees            camel               of sunlit canyon, cliffs                  of fox              city river with reflections          cheetah
+
+
+
+
+ a ceramic tile mural of       a ceramic tile mural of       a vintage poster of                a vintage poster of       a minimalist illustration     a minimalist illustration
+     rocky coastline                   turtle                medieval castle gate                      rabbit               of frozen waterfall                of turtle
+
+
+
+
+  a pixel art version of        a pixel art version of      a lithograph of beach,                a lithograph of            a vintage poster of          a vintage poster of
+vineyard, straight trellises             otter                shoreline & waves                        sailboat           harbor with docked ships          hot air balloon
+
+                                                                                        27
+

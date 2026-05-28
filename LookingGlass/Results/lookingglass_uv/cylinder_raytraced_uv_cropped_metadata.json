@@ -1,0 +1,23 @@
+{
+  "camera": "Camera",
+  "plane": "LG_Plane",
+  "mirror": "LG_Mirror",
+  "scan_resolution": [
+    512,
+    512
+  ],
+  "output_resolution": [
+    1024,
+    1024
+  ],
+  "crop_box_xyxy_in_scan_pixels": [
+    208,
+    113,
+    298,
+    225
+  ],
+  "scan_valid_pixels": 5826,
+  "output_valid_pixels": 605780,
+  "output_valid_fraction": 0.5777168273925781,
+  "output_npy": "G:\\My Drive\\NimaK\\LookingGlass\\Results\\lookingglass_uv\\cylinder_raytraced_uv_cropped.npy"
+}
