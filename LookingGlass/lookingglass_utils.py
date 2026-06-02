@@ -365,6 +365,45 @@ def reconstruct_laplacian(lp: Sequence[torch.Tensor]) -> torch.Tensor:
     return laplacian_to_gaussian(lp)[0]
 
 
+def pyramid_stack(pyramid: Sequence[torch.Tensor]) -> torch.Tensor:
+    """Upsample a pyramid to full resolution and stack it for 5D sampling.
+
+    This mirrors the supplementary pseudo-code's ``pyrStack(lp, dim=-1)``:
+    each level is expanded back to level-0 resolution with the pyramid's
+    upsampling operator, then stacked as a depth dimension. The returned tensor
+    has shape ``[B, C, L, H, W]`` so PyTorch's 5D ``grid_sample`` can sample
+    spatial position and LOD in one nearest-neighbor lookup.
+    """
+
+    if not pyramid:
+        raise ValueError("pyramid must contain at least one level")
+
+    base_h, base_w = pyramid[0].shape[-2:]
+    batch = max(level.shape[0] for level in pyramid)
+    channels = pyramid[0].shape[1]
+    shapes = [level.shape[-2:] for level in pyramid]
+
+    stacked: list[torch.Tensor] = []
+    for level_index, level_image in enumerate(pyramid):
+        if level_image.shape[1] != channels:
+            raise ValueError("all pyramid levels must have the same channel count")
+
+        upsampled = level_image.float()
+        if upsampled.shape[0] == 1 and batch > 1:
+            upsampled = upsampled.expand(batch, -1, -1, -1)
+        elif upsampled.shape[0] != batch:
+            raise ValueError("all pyramid levels must have batch size 1 or the same batch size")
+
+        for target_level in range(level_index - 1, -1, -1):
+            upsampled = pyr_up(upsampled, shapes[target_level])
+
+        if upsampled.shape[-2:] != (base_h, base_w):
+            raise RuntimeError("pyramid upsampling did not recover the base resolution")
+        stacked.append(upsampled)
+
+    return torch.stack(stacked, dim=2)
+
+
 def compute_lod_level(uv: torch.Tensor, *, max_lod: int) -> torch.Tensor:
     """Compute texture-mapping LOD from target-to-canonical UV derivatives."""
 
@@ -405,35 +444,51 @@ def forward_lpw_from_gaussian(
     sample_mode: str = "nearest",
     return_mask: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-    """Forward Laplacian Pyramid Warping from a Gaussian pyramid."""
+    """Forward Laplacian Pyramid Warping using page-13-style 5D sampling."""
 
-    uv = resize_uv(uv.to(gp[0].device), gp[0].shape[-2], gp[0].shape[-1]).float()
-    grid, valid = uv_to_grid(uv)
+    layers = pyramid_stack(gp).to(device=gp[0].device, dtype=torch.float32)
+    _, _, level_count, height, width = layers.shape
+    uv = resize_uv(uv.to(layers.device), height, width).float()
+    grid_xy, valid = uv_to_grid(uv)
 
-    b = max(gp[0].shape[0], uv.shape[0])
-    if grid.shape[0] == 1 and b > 1:
-        grid = grid.expand(b, -1, -1, -1)
+    b = max(layers.shape[0], uv.shape[0])
+    if layers.shape[0] == 1 and b > 1:
+        layers = layers.expand(b, -1, -1, -1, -1)
+    elif layers.shape[0] != b:
+        raise ValueError("pyramid batch size must be 1 or match the UV batch size")
+    if grid_xy.shape[0] == 1 and b > 1:
+        grid_xy = grid_xy.expand(b, -1, -1, -1)
         valid = valid.expand(b, -1, -1, -1)
-    max_lod = len(gp) - 1
+    elif grid_xy.shape[0] != b:
+        raise ValueError("UV batch size must be 1 or match the pyramid batch size")
+
+    max_lod = level_count - 1
     if lod is None:
         lod = compute_lod_level(uv, max_lod=max_lod)
     if lod.shape[0] == 1 and b > 1:
         lod = lod.expand(b, -1, -1, -1)
-    lod_level = lod.round().long().clamp(0, max_lod).to(device=gp[0].device)
+    elif lod.shape[0] != b:
+        raise ValueError("LOD batch size must be 1 or match the pyramid batch size")
 
-    out = torch.zeros((b, gp[0].shape[1], gp[0].shape[-2], gp[0].shape[-1]), device=gp[0].device, dtype=torch.float32)
-    weight_sum = torch.zeros((b, 1, gp[0].shape[-2], gp[0].shape[-1]), device=gp[0].device, dtype=torch.float32)
+    lod = lod.to(device=layers.device, dtype=torch.float32).clamp(0.0, float(max_lod))
+    if max_lod == 0:
+        lod_grid = torch.zeros_like(lod)
+    else:
+        lod_grid = 2.0 * lod / float(max_lod) - 1.0
+    lod_grid = lod_grid.permute(0, 2, 3, 1)
 
-    for level, level_image in enumerate(gp):
-        level_image = level_image.float()
-        if level_image.shape[0] == 1 and b > 1:
-            level_image = level_image.expand(b, -1, -1, -1)
-        sampled = F.grid_sample(level_image, grid, mode=sample_mode, padding_mode="zeros", align_corners=True)
-        weight = (lod_level == level).to(dtype=torch.float32)
-        out = out + sampled * weight
-        weight_sum = weight_sum + weight
+    # PyTorch 5D grid_sample expects coordinates in (x, y, z) order,
+    # corresponding here to (u, v, LOD). The paper writes this grid
+    # conceptually as (LOD, u, v) before its pyrStack helper.
+    grid = torch.cat([grid_xy, lod_grid], dim=-1).unsqueeze(1)
+    out = F.grid_sample(
+        layers,
+        grid,
+        mode=sample_mode,
+        padding_mode="zeros",
+        align_corners=True,
+    ).squeeze(2)
 
-    out = out / weight_sum.clamp_min(1e-6)
     out = torch.where(valid.bool(), out, torch.full_like(out, fill_value))
     if return_mask:
         return out, valid
@@ -895,7 +950,6 @@ def predict_velocity_sd3(
         noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
     return noise_pred
 
-
 def sample_lookingglass(
     pipe,
     views: Sequence[ViewSpec],
@@ -1051,6 +1105,177 @@ def sample_lookingglass(
         "views": views,
         "prompts": prompts,
     }
+
+
+def fake_timetravel_sample_lookingglass(
+    pipe,
+    views: Sequence[ViewSpec],
+    *,
+    height: int = 1024,
+    width: int = 1024,
+    num_inference_steps: int = 30,
+    guidance_scale: float = 4.5,
+    image_levels: int = 6,
+    latent_levels: int = 4,
+    alpha: float = 0.35,
+    lpw_sample_mode: str = "nearest",
+    seed: Optional[int] = None,
+    generator: Optional[torch.Generator] = None,
+    negative_prompts: Optional[Sequence[str]] = None,
+    sync_repeat_start: float = 0.20,
+    sync_repeat_stop: float = 0.80,
+    sync_repeats: int = 1,
+    prioritize_view: Optional[int] = 0,
+    prioritize_fraction: float = 0.20,
+    max_sequence_length: int = 256,
+    correlated_initial_noise: bool = False,
+    callback: Optional[Callable[[int, torch.Tensor, torch.Tensor], None]] = None,
+) -> dict:
+    """Generate a LookingGlass illusion with fake clean-space time travel.
+
+    This variant keeps the normal LookingGlass clean-latent synchronization,
+    but changes the repeated time-travel window. For a selected base step at
+    `sigma`, it predicts all repeated clean latents at the same `sigma` without
+    jumping to `next_sigma` or adding noise back between repeats. With
+    `sync_repeats=2`, the sequence is:
+
+        latent_sigma -> clean_1 -> clean_2 -> clean_3 -> latent_next_sigma
+
+    The final noise-back move uses the velocity from the last fake denoise,
+    i.e. from `clean_2` to `clean_3` in the example above. Outside the selected
+    repeat window, the step runs once like a normal clean prediction followed
+    by the move to `next_sigma`.
+    """
+
+    if not views:
+        raise ValueError("at least one ViewSpec is required")
+
+    device = pipe._execution_device if hasattr(pipe, "_execution_device") else torch.device("cuda")
+    dtype = module_dtype(pipe.transformer)
+    if generator is None and seed is not None:
+        generator = torch.Generator(device=device).manual_seed(seed)
+
+    prompts = [view.prompt for view in views]
+    uvs = [resize_uv(view.uv.to(device), height, width) for view in views]
+    do_cfg = guidance_scale is not None and guidance_scale > 1.0
+
+    prompt_embeds, pooled_prompt_embeds = encode_sd3_prompts(
+        pipe,
+        prompts,
+        negative_prompts=negative_prompts,
+        device=device,
+        do_classifier_free_guidance=do_cfg,
+        max_sequence_length=max_sequence_length,
+    )
+
+    num_channels_latents = pipe.transformer.config.in_channels
+    if correlated_initial_noise:
+        base_latents = pipe.prepare_latents(
+            1,
+            num_channels_latents,
+            height,
+            width,
+            prompt_embeds.dtype,
+            device,
+            generator,
+            latents=None,
+        )
+        latent_height = base_latents.shape[-2]
+        latent_width = base_latents.shape[-1]
+        latent_view_uvs = [resize_uv(uv.to(device), latent_height, latent_width) for uv in uvs]
+        latents = torch.cat(
+            [
+                sample_tensor_with_uv(
+                    base_latents,
+                    latent_view_uvs[idx],
+                    sample_mode=lpw_sample_mode,
+                    fill_value=0.0,
+                )
+                for idx in range(len(views))
+            ],
+            dim=0,
+        )
+    else:
+        latents = pipe.prepare_latents(
+            len(views),
+            num_channels_latents,
+            height,
+            width,
+            prompt_embeds.dtype,
+            device,
+            generator,
+            latents=None,
+        )
+
+    timesteps = set_sd3_timesteps(pipe, latents, num_inference_steps, device=device)
+    sigmas = pipe.scheduler.sigmas.to(device=device, dtype=latents.dtype)
+    total_steps = len(timesteps)
+    first_repeat = int(total_steps * sync_repeat_start)
+    last_repeat = int(total_steps * sync_repeat_stop)
+    repeat_count = max(0, int(sync_repeats))
+    first_prioritize = int(total_steps * (1.0 - prioritize_fraction))
+
+    transition_index = 0
+    for step_index in range(total_steps):
+        sigma = sigmas[step_index].to(device=latents.device, dtype=latents.dtype)
+        next_sigma = sigmas[step_index + 1].to(device=latents.device, dtype=latents.dtype)
+        timestep = timestep_from_sigma(pipe, sigma, device=latents.device)
+
+        active_indices = None
+        if prioritize_view is not None and prioritize_fraction > 0 and step_index >= first_prioritize:
+            active_indices = [int(prioritize_view)]
+
+        fake_repeats = repeat_count if first_repeat <= step_index < last_repeat and step_index < total_steps - 1 else 0
+        current_latents = latents
+        synced_velocity = None
+        denoise_start = current_latents
+        for _ in range(fake_repeats + 1):
+            denoise_start = current_latents
+            with torch.no_grad():
+                velocity = predict_velocity_sd3(
+                    pipe,
+                    denoise_start,
+                    timestep,
+                    prompt_embeds,
+                    pooled_prompt_embeds,
+                    guidance_scale=guidance_scale,
+                )
+
+            clean_latents = denoise_start - sigma * velocity
+            current_latents = synchronize_clean_latents(
+                pipe,
+                clean_latents,
+                uvs,
+                image_levels=image_levels,
+                latent_levels=latent_levels,
+                alpha=alpha,
+                lpw_sample_mode=lpw_sample_mode,
+                active_indices=active_indices,
+            ).detach()
+            synced_velocity = (denoise_start - current_latents) / sigma.clamp_min(1e-6)
+
+        if synced_velocity is None:
+            raise RuntimeError("fake time-travel loop did not run")
+        latents_dtype = latents.dtype
+        latents = flowmatch_euler_step(denoise_start, synced_velocity, sigma, next_sigma)
+        latents = latents.to(latents_dtype).detach()
+
+        if callback is not None:
+            callback(transition_index, timestep, latents)
+        transition_index += 1
+
+    with torch.no_grad():
+        decoded = vae_decode_tensor(pipe, latents)
+        images = pipe.image_processor.postprocess(decoded, output_type="pil")
+
+    return {
+        "images": images,
+        "latents": latents,
+        "views": views,
+        "prompts": prompts,
+    }
+
+
 
 
 @torch.no_grad()
@@ -1513,6 +1738,275 @@ def sample_figure5_lpw_ablation(
             torch.cuda.empty_cache()
 
     return outputs
+
+
+@dataclass
+class FactorizedViewSpec:
+    """A view with per-band text prompts for factorized diffusion.
+
+    Each prompt controls a different frequency band of the view.  The image
+    generated for band *i* is decomposed so that only its assigned frequency
+    component survives; the components are then summed to form the final
+    clean-latent estimate for that view.
+
+    Attributes:
+        name: Human-readable label for logging / filenames.
+        prompts: One text prompt per frequency band.  Length 2 gives
+            low/high; length 3 gives low/medium/high.
+        uv: Target-to-canonical UV map, shape ``[H, W, 2]``.
+        blur_sigma: Base Gaussian blur sigma for the frequency split.
+            The low-pass kernel uses ``blur_sigma``; the medium-pass
+            kernel (3-band) uses ``2 * blur_sigma``.
+    """
+
+    name: str
+    prompts: list[str]
+    uv: torch.Tensor
+    blur_sigma: float = 5.0
+
+
+def _decompose_blur(image: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Separable Gaussian blur used for frequency decomposition."""
+
+    ks = int(2 * round(3 * sigma) + 1)
+    if ks % 2 == 0:
+        ks += 1
+    x = torch.arange(ks, device=image.device, dtype=image.dtype) - ks // 2
+    k1d = torch.exp(-x.pow(2) / (2 * sigma ** 2))
+    k1d = k1d / k1d.sum()
+    channels = image.shape[1]
+    ky = k1d.view(1, 1, ks, 1).repeat(channels, 1, 1, 1)
+    kx = k1d.view(1, 1, 1, ks).repeat(channels, 1, 1, 1)
+    pad = ks // 2
+    out = F.pad(image, (0, 0, pad, pad), mode="reflect")
+    out = F.conv2d(out, ky, groups=channels)
+    out = F.pad(out, (pad, pad, 0, 0), mode="reflect")
+    out = F.conv2d(out, kx, groups=channels)
+    return out
+
+
+def _frequency_composite(
+    band_images: list[torch.Tensor],
+    blur_sigma: float,
+) -> torch.Tensor:
+    """Sum frequency-band images according to the factorized-diffusion recipe.
+
+    For 2 bands:  composite = blur(x_low) + (x_high − blur(x_high)).
+    For 3 bands:  composite = blur2(x_low)
+                            + (blur1(x_med) − blur2(x_med))
+                            + (x_high − blur1(x_high)).
+    """
+
+    n = len(band_images)
+    if n == 2:
+        low = _decompose_blur(band_images[0], blur_sigma)
+        high = band_images[1] - _decompose_blur(band_images[1], blur_sigma)
+        return low + high
+    if n == 3:
+        s1 = blur_sigma
+        s2 = blur_sigma * 2
+        low = _decompose_blur(band_images[0], s2)
+        med = _decompose_blur(band_images[1], s1) - _decompose_blur(band_images[1], s2)
+        high = band_images[2] - _decompose_blur(band_images[2], s1)
+        return low + med + high
+    raise ValueError(f"Expected 2 or 3 bands, got {n}")
+
+
+@torch.no_grad()
+def factorized_composite_clean_latents(
+    pipe,
+    per_view_band_latents: list[list[torch.Tensor]],
+    blur_sigmas: Sequence[float],
+) -> torch.Tensor:
+    """Decode per-band clean latents, composite in image space, re-encode.
+
+    Args:
+        pipe: SD3 / SD3.5 pipeline (VAE used for decode / encode).
+        per_view_band_latents: ``per_view_band_latents[view][band]`` is a
+            single-view clean-latent tensor ``[1, C, H, W]``.
+        blur_sigmas: One Gaussian sigma per view for the frequency split.
+            Views with a single band skip compositing entirely.
+
+    Returns:
+        Tensor of shape ``[N_views, C, H, W]`` with composited clean latents.
+    """
+
+    composited: list[torch.Tensor] = []
+    for band_latents, sigma in zip(per_view_band_latents, blur_sigmas):
+        if len(band_latents) == 1:
+            composited.append(band_latents[0])
+            continue
+        band_images = [vae_decode_tensor(pipe, z) for z in band_latents]
+        comp_img = _frequency_composite(band_images, sigma)
+        comp_latent = vae_encode_tensor(pipe, comp_img)
+        composited.append(comp_latent)
+    return torch.cat(composited, dim=0)
+
+
+@torch.no_grad()
+def sample_factorized_lookingglass(
+    pipe,
+    views: Sequence[FactorizedViewSpec],
+    *,
+    height: int = 1024,
+    width: int = 1024,
+    num_inference_steps: int = 30,
+    guidance_scale: float = 4.5,
+    image_levels: int = 6,
+    latent_levels: int = 4,
+    alpha: float = 0.35,
+    lpw_sample_mode: str = "nearest",
+    seed: Optional[int] = None,
+    generator: Optional[torch.Generator] = None,
+    negative_prompts: Optional[Sequence[str]] = None,
+    sync_repeat_start: float = 0.20,
+    sync_repeat_stop: float = 0.80,
+    sync_repeats: int = 1,
+    prioritize_view: Optional[int] = 0,
+    prioritize_fraction: float = 0.20,
+    max_sequence_length: int = 256,
+    callback: Optional[Callable[[int, torch.Tensor, torch.Tensor], None]] = None,
+) -> dict:
+    """Generate a Factorized-LookingGlass illusion.
+
+    Each view carries *B* prompts (one per frequency band).  At every
+    denoising step the model is run once per prompt per view, producing
+    *B* clean-latent estimates.  These are decoded to image space,
+    frequency-decomposed, composited (low freq from prompt 0, high freq
+    from prompt 1, …), re-encoded, and then fed into the standard
+    LookingGlass LPW synchronization.
+
+    Cost per step: ``N_views × B`` transformer forward passes (doubled
+    with CFG).  For 2 views × 2 bands with CFG that is 8 passes per step.
+
+    Returns the same dict shape as ``sample_lookingglass``.
+    """
+
+    if not views:
+        raise ValueError("at least one FactorizedViewSpec is required")
+
+    device = pipe._execution_device if hasattr(pipe, "_execution_device") else torch.device("cuda")
+    dtype = module_dtype(pipe.transformer)
+    if generator is None and seed is not None:
+        generator = torch.Generator(device=device).manual_seed(seed)
+
+    num_views = len(views)
+    view_band_counts = [len(v.prompts) for v in views]
+    total_bands = sum(view_band_counts)
+
+    uvs = [resize_uv(view.uv.to(device), height, width) for view in views]
+    do_cfg = guidance_scale is not None and guidance_scale > 1.0
+
+    all_prompts: list[str] = []
+    for view in views:
+        all_prompts.extend(view.prompts)
+
+    prompt_embeds, pooled_prompt_embeds = encode_sd3_prompts(
+        pipe,
+        all_prompts,
+        negative_prompts=negative_prompts,
+        device=device,
+        do_classifier_free_guidance=do_cfg,
+        max_sequence_length=max_sequence_length,
+    )
+
+    num_channels_latents = pipe.transformer.config.in_channels
+    latents = pipe.prepare_latents(
+        num_views,
+        num_channels_latents,
+        height,
+        width,
+        prompt_embeds.dtype,
+        device,
+        generator,
+        latents=None,
+    )
+
+    timesteps = set_sd3_timesteps(pipe, latents, num_inference_steps, device=device)
+    sigmas = pipe.scheduler.sigmas.to(device=device, dtype=latents.dtype)
+    total_steps = len(timesteps)
+    transitions = time_travel_transitions(
+        total_steps,
+        sync_repeat_start=sync_repeat_start,
+        sync_repeat_stop=sync_repeat_stop,
+        sync_repeats=sync_repeats,
+    )
+    first_prioritize = int(total_steps * (1.0 - prioritize_fraction))
+
+    for transition_index, (step_index, sigma_index, next_sigma_index) in enumerate(transitions):
+        sigma = sigmas[sigma_index].to(device=latents.device, dtype=latents.dtype)
+        next_sigma = sigmas[next_sigma_index].to(device=latents.device, dtype=latents.dtype)
+        timestep = timestep_from_sigma(pipe, sigma, device=latents.device)
+
+        per_view_band_latents: list[list[torch.Tensor]] = []
+        for view_idx in range(num_views):
+            band_clean: list[torch.Tensor] = []
+            base = sum(view_band_counts[:view_idx])
+            for band_idx in range(view_band_counts[view_idx]):
+                global_idx = base + band_idx
+                if do_cfg:
+                    pe = torch.cat([
+                        prompt_embeds[global_idx : global_idx + 1],
+                        prompt_embeds[total_bands + global_idx : total_bands + global_idx + 1],
+                    ], dim=0)
+                    ppe = torch.cat([
+                        pooled_prompt_embeds[global_idx : global_idx + 1],
+                        pooled_prompt_embeds[total_bands + global_idx : total_bands + global_idx + 1],
+                    ], dim=0)
+                else:
+                    pe = prompt_embeds[global_idx : global_idx + 1]
+                    ppe = pooled_prompt_embeds[global_idx : global_idx + 1]
+                v = predict_velocity_sd3(
+                    pipe,
+                    latents[view_idx : view_idx + 1],
+                    timestep,
+                    pe,
+                    ppe,
+                    guidance_scale=guidance_scale,
+                )
+                band_clean.append(latents[view_idx : view_idx + 1] - sigma * v)
+            per_view_band_latents.append(band_clean)
+
+        blur_sigmas = [v.blur_sigma for v in views]
+        composited_clean = factorized_composite_clean_latents(
+            pipe,
+            per_view_band_latents,
+            blur_sigmas=blur_sigmas,
+        )
+
+        active_indices = None
+        if prioritize_view is not None and prioritize_fraction > 0 and step_index >= first_prioritize:
+            active_indices = [int(prioritize_view)]
+
+        synced_clean = synchronize_clean_latents(
+            pipe,
+            composited_clean,
+            uvs,
+            image_levels=image_levels,
+            latent_levels=latent_levels,
+            alpha=alpha,
+            lpw_sample_mode=lpw_sample_mode,
+            active_indices=active_indices,
+        )
+
+        synced_velocity = (latents - synced_clean) / sigma.clamp_min(1e-6)
+        latents_dtype = latents.dtype
+        latents = flowmatch_euler_step(latents, synced_velocity, sigma, next_sigma)
+        latents = latents.to(latents_dtype).detach()
+
+        if callback is not None:
+            callback(transition_index, timestep, latents)
+
+    with torch.no_grad():
+        decoded = vae_decode_tensor(pipe, latents)
+        images = pipe.image_processor.postprocess(decoded, output_type="pil")
+
+    return {
+        "images": images,
+        "latents": latents,
+        "views": views,
+        "prompts": all_prompts,
+    }
 
 
 def load_sd3_pipeline(
