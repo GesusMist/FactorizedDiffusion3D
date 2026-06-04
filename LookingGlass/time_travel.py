@@ -7,7 +7,15 @@ from typing import Literal
 import torch
 
 
-TimeTravelVelocityMode = Literal["sync", "noise", "unsync", "full_sync", "full_unsync", "weighted_noise_unsync"]
+TimeTravelVelocityMode = Literal[
+    "sync",
+    "noise",
+    "unsync",
+    "full_sync",
+    "full_unsync",
+    "new_full_sync",
+    "weighted_noise_unsync",
+]
 
 
 def flowmatch_euler_step(
@@ -77,12 +85,23 @@ def validate_time_travel_velocity_mode(mode: str) -> TimeTravelVelocityMode:
         "full_synced": "full_sync",
         "full_raw": "full_unsync",
         "full_unsynced": "full_unsync",
+        "fresh_full_sync": "new_full_sync",
+        "new_sync": "new_full_sync",
     }
     normalized = aliases.get(mode, mode)
-    if normalized not in {"sync", "noise", "unsync", "full_sync", "full_unsync", "weighted_noise_unsync"}:
+    if normalized not in {
+        "sync",
+        "noise",
+        "unsync",
+        "full_sync",
+        "full_unsync",
+        "new_full_sync",
+        "weighted_noise_unsync",
+    }:
         raise ValueError(
             "time_travel_velocity_mode must be one of: "
-            "'sync', 'noise', 'unsync', 'full_sync', 'full_unsync', 'weighted_noise_unsync'"
+            "'sync', 'noise', 'unsync', 'full_sync', 'full_unsync', "
+            "'new_full_sync', 'weighted_noise_unsync'"
         )
     return normalized  # type: ignore[return-value]
 
@@ -102,6 +121,7 @@ def select_time_travel_velocity(
     synced_velocity: torch.Tensor,
     raw_velocity: torch.Tensor,
     original_pure_noise: torch.Tensor | None,
+    noise_generator: torch.Generator | None = None,
     eps: float = 1e-6,
 ) -> torch.Tensor:
     """Choose the velocity for a FlowMatch transition.
@@ -115,6 +135,7 @@ def select_time_travel_velocity(
     - ``unsync``: ``(z_t - x0_raw) / sigma_t``, equivalent to the model velocity.
     - ``full_sync``: ``original_pure_noise - x0_sync``.
     - ``full_unsync``: ``original_pure_noise - x0_raw``.
+    - ``new_full_sync``: ``newly_sampled_pure_noise - x0_sync``.
     """
 
     if not is_backward_transition(current_sigma, next_sigma):
@@ -126,12 +147,23 @@ def select_time_travel_velocity(
     if normalized == "unsync":
         return raw_velocity
 
-    if original_pure_noise is None:
-        raise ValueError(f"original_pure_noise is required for time_travel_velocity_mode='{normalized}'")
-
     sigma = current_sigma
     while sigma.ndim < current_latents.ndim:
         sigma = sigma.unsqueeze(-1)
+
+    if normalized == "new_full_sync":
+        synced_clean = current_latents.float() - sigma.float() * synced_velocity.float()
+        sampled_pure_noise = torch.randn(
+            current_latents.shape,
+            device=current_latents.device,
+            dtype=current_latents.dtype,
+            generator=noise_generator,
+        )
+        return sampled_pure_noise.float() - synced_clean
+
+    if original_pure_noise is None:
+        raise ValueError(f"original_pure_noise is required for time_travel_velocity_mode='{normalized}'")
+
     if normalized == "full_sync":
         synced_clean = current_latents.float() - sigma.float() * synced_velocity.float()
         return original_pure_noise.float() - synced_clean

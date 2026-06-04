@@ -956,8 +956,9 @@ def sample_lookingglass(
     "sync" uses `(z_t - x0_sync) / sigma_t`, "noise" uses
     `(original_pure_noise - z_t) / (1 - sigma_t)`, "unsync" uses
     `(z_t - x0_raw) / sigma_t`, "full_sync" uses
-    `original_pure_noise - x0_sync`, and "full_unsync" uses
-    `original_pure_noise - x0_raw`.
+    `original_pure_noise - x0_sync`, "full_unsync" uses
+    `original_pure_noise - x0_raw`, and "new_full_sync" samples fresh
+    pure noise each backward time-travel jump for `new_pure_noise - x0_sync`.
     By default, each view starts from an independent Gaussian latent, matching
     Algorithm 1. Set `correlated_initial_noise=True` to initialize every view
     from one UV-transformed base latent for Visual-Anagrams-style experiments.
@@ -1077,6 +1078,7 @@ def sample_lookingglass(
             synced_velocity=synced_velocity,
             raw_velocity=velocity,
             original_pure_noise=original_pure_noise,
+            noise_generator=generator,
         )
         latents_dtype = latents.dtype
         latents = flowmatch_euler_step(latents, transition_velocity, sigma, next_sigma)
@@ -1552,6 +1554,7 @@ def sample_figure5_lpw_ablation(
                     synced_velocity=model_output,
                     raw_velocity=velocity,
                     original_pure_noise=original_pure_noise,
+                    noise_generator=local_generator,
                 )
 
                 latents_dtype = latents.dtype
@@ -1834,6 +1837,7 @@ def sample_factorized_lookingglass(
             synced_velocity=synced_velocity,
             raw_velocity=raw_velocity,
             original_pure_noise=original_pure_noise,
+            noise_generator=generator,
         )
         latents_dtype = latents.dtype
         latents = flowmatch_euler_step(latents, transition_velocity, sigma, next_sigma)
