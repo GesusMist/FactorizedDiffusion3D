@@ -22,6 +22,23 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+try:
+    from .time_travel import (
+        flowmatch_euler_step,
+        needs_original_pure_noise,
+        select_time_travel_velocity,
+        time_travel_transitions,
+        validate_time_travel_velocity_mode,
+    )
+except ImportError:
+    from time_travel import (
+        flowmatch_euler_step,
+        needs_original_pure_noise,
+        select_time_travel_velocity,
+        time_travel_transitions,
+        validate_time_travel_velocity_mode,
+    )
+
 
 @dataclass
 class ViewSpec:
@@ -848,51 +865,6 @@ def timestep_from_sigma(pipe, sigma: torch.Tensor, *, device) -> torch.Tensor:
     return sigma.to(device=device, dtype=torch.float32) * pipe.scheduler.config.num_train_timesteps
 
 
-def flowmatch_euler_step(
-    sample: torch.Tensor,
-    model_output: torch.Tensor,
-    current_sigma: torch.Tensor,
-    next_sigma: torch.Tensor,
-) -> torch.Tensor:
-    """FlowMatch Euler transition for arbitrary forward or backward sigma jumps."""
-
-    dtype = sample.dtype
-    while current_sigma.ndim < sample.ndim:
-        current_sigma = current_sigma.unsqueeze(-1)
-    while next_sigma.ndim < sample.ndim:
-        next_sigma = next_sigma.unsqueeze(-1)
-    out = sample.float() + (next_sigma.float() - current_sigma.float()) * model_output.float()
-    return out.to(dtype=dtype)
-
-
-def time_travel_transitions(
-    total_steps: int,
-    *,
-    sync_repeat_start: float = 0.20,
-    sync_repeat_stop: float = 0.80,
-    sync_repeats: int = 1,
-) -> list[tuple[int, int, int]]:
-    """Build one-step denoise/noise-back transitions for paper-style time travel.
-
-    Each tuple is `(base_step_index, current_sigma_index, next_sigma_index)`.
-    For `sync_repeats=N`, timesteps in the selected range become:
-    `i -> i+1 -> i -> i+1 ...`, ending at `i+1`.
-    """
-
-    first_repeat = int(total_steps * sync_repeat_start)
-    last_repeat = int(total_steps * sync_repeat_stop)
-    repeat_count = max(1, int(sync_repeats))
-
-    transitions: list[tuple[int, int, int]] = []
-    for step_index in range(total_steps):
-        repeats = repeat_count if first_repeat <= step_index < last_repeat and step_index < total_steps - 1 else 1
-        for repeat_index in range(repeats):
-            transitions.append((step_index, step_index, step_index + 1))
-            if repeat_index < repeats - 1:
-                transitions.append((step_index, step_index + 1, step_index))
-    return transitions
-
-
 def encode_sd3_prompts(
     pipe,
     prompts: Sequence[str],
@@ -968,6 +940,7 @@ def sample_lookingglass(
     sync_repeat_start: float = 0.20,
     sync_repeat_stop: float = 0.80,
     sync_repeats: int = 1,
+    time_travel_velocity_mode: str = "sync",
     prioritize_view: Optional[int] = 0,
     prioritize_fraction: float = 0.20,
     max_sequence_length: int = 256,
@@ -979,6 +952,12 @@ def sample_lookingglass(
     `sync_repeats` follows the paper's time-travel convention: selected
     one-step denoising segments are expanded into forward/backward sigma
     transitions and then re-denoised, rather than merely repeating LPW sync.
+    `time_travel_velocity_mode` controls only the backward/noise-back segments:
+    "sync" uses `(z_t - x0_sync) / sigma_t`, "noise" uses
+    `(original_pure_noise - z_t) / (1 - sigma_t)`, "unsync" uses
+    `(z_t - x0_raw) / sigma_t`, "full_sync" uses
+    `original_pure_noise - x0_sync`, and "full_unsync" uses
+    `original_pure_noise - x0_raw`.
     By default, each view starts from an independent Gaussian latent, matching
     Algorithm 1. Set `correlated_initial_noise=True` to initialize every view
     from one UV-transformed base latent for Visual-Anagrams-style experiments.
@@ -989,6 +968,7 @@ def sample_lookingglass(
 
     device = pipe._execution_device if hasattr(pipe, "_execution_device") else torch.device("cuda")
     dtype = module_dtype(pipe.transformer)
+    time_travel_velocity_mode = validate_time_travel_velocity_mode(time_travel_velocity_mode)
     if generator is None and seed is not None:
         generator = torch.Generator(device=device).manual_seed(seed)
 
@@ -1043,6 +1023,7 @@ def sample_lookingglass(
             generator,
             latents=None,
         )
+    original_pure_noise = latents.detach().clone() if needs_original_pure_noise(time_travel_velocity_mode) else None
 
     timesteps = set_sd3_timesteps(pipe, latents, num_inference_steps, device=device)
     sigmas = pipe.scheduler.sigmas.to(device=device, dtype=latents.dtype)
@@ -1088,8 +1069,17 @@ def sample_lookingglass(
         )
 
         synced_velocity = (latents - synced_clean) / sigma.clamp_min(1e-6)
+        transition_velocity = select_time_travel_velocity(
+            mode=time_travel_velocity_mode,
+            current_latents=latents,
+            current_sigma=sigma,
+            next_sigma=next_sigma,
+            synced_velocity=synced_velocity,
+            raw_velocity=velocity,
+            original_pure_noise=original_pure_noise,
+        )
         latents_dtype = latents.dtype
-        latents = flowmatch_euler_step(latents, synced_velocity, sigma, next_sigma)
+        latents = flowmatch_euler_step(latents, transition_velocity, sigma, next_sigma)
         latents = latents.to(latents_dtype).detach()
 
         if callback is not None:
@@ -1105,176 +1095,6 @@ def sample_lookingglass(
         "views": views,
         "prompts": prompts,
     }
-
-
-def fake_timetravel_sample_lookingglass(
-    pipe,
-    views: Sequence[ViewSpec],
-    *,
-    height: int = 1024,
-    width: int = 1024,
-    num_inference_steps: int = 30,
-    guidance_scale: float = 4.5,
-    image_levels: int = 6,
-    latent_levels: int = 4,
-    alpha: float = 0.35,
-    lpw_sample_mode: str = "nearest",
-    seed: Optional[int] = None,
-    generator: Optional[torch.Generator] = None,
-    negative_prompts: Optional[Sequence[str]] = None,
-    sync_repeat_start: float = 0.20,
-    sync_repeat_stop: float = 0.80,
-    sync_repeats: int = 1,
-    prioritize_view: Optional[int] = 0,
-    prioritize_fraction: float = 0.20,
-    max_sequence_length: int = 256,
-    correlated_initial_noise: bool = False,
-    callback: Optional[Callable[[int, torch.Tensor, torch.Tensor], None]] = None,
-) -> dict:
-    """Generate a LookingGlass illusion with fake clean-space time travel.
-
-    This variant keeps the normal LookingGlass clean-latent synchronization,
-    but changes the repeated time-travel window. For a selected base step at
-    `sigma`, it predicts all repeated clean latents at the same `sigma` without
-    jumping to `next_sigma` or adding noise back between repeats. With
-    `sync_repeats=2`, the sequence is:
-
-        latent_sigma -> clean_1 -> clean_2 -> clean_3 -> latent_next_sigma
-
-    The final noise-back move uses the velocity from the last fake denoise,
-    i.e. from `clean_2` to `clean_3` in the example above. Outside the selected
-    repeat window, the step runs once like a normal clean prediction followed
-    by the move to `next_sigma`.
-    """
-
-    if not views:
-        raise ValueError("at least one ViewSpec is required")
-
-    device = pipe._execution_device if hasattr(pipe, "_execution_device") else torch.device("cuda")
-    dtype = module_dtype(pipe.transformer)
-    if generator is None and seed is not None:
-        generator = torch.Generator(device=device).manual_seed(seed)
-
-    prompts = [view.prompt for view in views]
-    uvs = [resize_uv(view.uv.to(device), height, width) for view in views]
-    do_cfg = guidance_scale is not None and guidance_scale > 1.0
-
-    prompt_embeds, pooled_prompt_embeds = encode_sd3_prompts(
-        pipe,
-        prompts,
-        negative_prompts=negative_prompts,
-        device=device,
-        do_classifier_free_guidance=do_cfg,
-        max_sequence_length=max_sequence_length,
-    )
-
-    num_channels_latents = pipe.transformer.config.in_channels
-    if correlated_initial_noise:
-        base_latents = pipe.prepare_latents(
-            1,
-            num_channels_latents,
-            height,
-            width,
-            prompt_embeds.dtype,
-            device,
-            generator,
-            latents=None,
-        )
-        latent_height = base_latents.shape[-2]
-        latent_width = base_latents.shape[-1]
-        latent_view_uvs = [resize_uv(uv.to(device), latent_height, latent_width) for uv in uvs]
-        latents = torch.cat(
-            [
-                sample_tensor_with_uv(
-                    base_latents,
-                    latent_view_uvs[idx],
-                    sample_mode=lpw_sample_mode,
-                    fill_value=0.0,
-                )
-                for idx in range(len(views))
-            ],
-            dim=0,
-        )
-    else:
-        latents = pipe.prepare_latents(
-            len(views),
-            num_channels_latents,
-            height,
-            width,
-            prompt_embeds.dtype,
-            device,
-            generator,
-            latents=None,
-        )
-
-    timesteps = set_sd3_timesteps(pipe, latents, num_inference_steps, device=device)
-    sigmas = pipe.scheduler.sigmas.to(device=device, dtype=latents.dtype)
-    total_steps = len(timesteps)
-    first_repeat = int(total_steps * sync_repeat_start)
-    last_repeat = int(total_steps * sync_repeat_stop)
-    repeat_count = max(0, int(sync_repeats))
-    first_prioritize = int(total_steps * (1.0 - prioritize_fraction))
-
-    transition_index = 0
-    for step_index in range(total_steps):
-        sigma = sigmas[step_index].to(device=latents.device, dtype=latents.dtype)
-        next_sigma = sigmas[step_index + 1].to(device=latents.device, dtype=latents.dtype)
-        timestep = timestep_from_sigma(pipe, sigma, device=latents.device)
-
-        active_indices = None
-        if prioritize_view is not None and prioritize_fraction > 0 and step_index >= first_prioritize:
-            active_indices = [int(prioritize_view)]
-
-        fake_repeats = repeat_count if first_repeat <= step_index < last_repeat and step_index < total_steps - 1 else 0
-        current_latents = latents
-        synced_velocity = None
-        denoise_start = current_latents
-        for _ in range(fake_repeats + 1):
-            denoise_start = current_latents
-            with torch.no_grad():
-                velocity = predict_velocity_sd3(
-                    pipe,
-                    denoise_start,
-                    timestep,
-                    prompt_embeds,
-                    pooled_prompt_embeds,
-                    guidance_scale=guidance_scale,
-                )
-
-            clean_latents = denoise_start - sigma * velocity
-            current_latents = synchronize_clean_latents(
-                pipe,
-                clean_latents,
-                uvs,
-                image_levels=image_levels,
-                latent_levels=latent_levels,
-                alpha=alpha,
-                lpw_sample_mode=lpw_sample_mode,
-                active_indices=active_indices,
-            ).detach()
-            synced_velocity = (denoise_start - current_latents) / sigma.clamp_min(1e-6)
-
-        if synced_velocity is None:
-            raise RuntimeError("fake time-travel loop did not run")
-        latents_dtype = latents.dtype
-        latents = flowmatch_euler_step(denoise_start, synced_velocity, sigma, next_sigma)
-        latents = latents.to(latents_dtype).detach()
-
-        if callback is not None:
-            callback(transition_index, timestep, latents)
-        transition_index += 1
-
-    with torch.no_grad():
-        decoded = vae_decode_tensor(pipe, latents)
-        images = pipe.image_processor.postprocess(decoded, output_type="pil")
-
-    return {
-        "images": images,
-        "latents": latents,
-        "views": views,
-        "prompts": prompts,
-    }
-
 
 
 
@@ -1596,6 +1416,7 @@ def sample_figure5_lpw_ablation(
     sync_repeat_start: float = 0.20,
     sync_repeat_stop: float = 0.80,
     sync_repeats: int = 1,
+    time_travel_velocity_mode: str = "sync",
     prioritize_view: Optional[int] = 0,
     prioritize_fraction: float = 0.20,
     max_sequence_length: int = 256,
@@ -1622,6 +1443,7 @@ def sample_figure5_lpw_ablation(
     latent_height = height // pipe.vae_scale_factor
     latent_width = width // pipe.vae_scale_factor
     latent_view_uvs = [resize_uv(uv.to(device), latent_height, latent_width) for uv in view_uvs]
+    time_travel_velocity_mode = validate_time_travel_velocity_mode(time_travel_velocity_mode)
 
     do_cfg = guidance_scale is not None and guidance_scale > 1.0
     prompt_embeds, pooled_prompt_embeds = encode_sd3_prompts(
@@ -1678,6 +1500,7 @@ def sample_figure5_lpw_ablation(
                 local_generator,
                 latents=None,
             )
+        original_pure_noise = latents.detach().clone() if needs_original_pure_noise(time_travel_velocity_mode) else None
 
         timesteps = set_sd3_timesteps(pipe, latents, num_inference_steps, device=device)
         sigmas = pipe.scheduler.sigmas.to(device=device, dtype=latents.dtype)
@@ -1721,9 +1544,18 @@ def sample_figure5_lpw_ablation(
                     active_indices=active_indices,
                 )
                 model_output = (latents - synced_clean) / sigma.clamp_min(1e-6)
+                transition_velocity = select_time_travel_velocity(
+                    mode=time_travel_velocity_mode,
+                    current_latents=latents,
+                    current_sigma=sigma,
+                    next_sigma=next_sigma,
+                    synced_velocity=model_output,
+                    raw_velocity=velocity,
+                    original_pure_noise=original_pure_noise,
+                )
 
                 latents_dtype = latents.dtype
-                latents = flowmatch_euler_step(latents.detach(), model_output, sigma, next_sigma)
+                latents = flowmatch_euler_step(latents.detach(), transition_velocity, sigma, next_sigma)
                 latents = latents.to(latents_dtype).detach()
 
                 if callback is not None:
@@ -1862,6 +1694,7 @@ def sample_factorized_lookingglass(
     sync_repeat_start: float = 0.20,
     sync_repeat_stop: float = 0.80,
     sync_repeats: int = 1,
+    time_travel_velocity_mode: str = "sync",
     prioritize_view: Optional[int] = 0,
     prioritize_fraction: float = 0.20,
     max_sequence_length: int = 256,
@@ -1889,6 +1722,7 @@ def sample_factorized_lookingglass(
     dtype = module_dtype(pipe.transformer)
     if generator is None and seed is not None:
         generator = torch.Generator(device=device).manual_seed(seed)
+    time_travel_velocity_mode = validate_time_travel_velocity_mode(time_travel_velocity_mode)
 
     num_views = len(views)
     view_band_counts = [len(v.prompts) for v in views]
@@ -1921,6 +1755,7 @@ def sample_factorized_lookingglass(
         generator,
         latents=None,
     )
+    original_pure_noise = latents.detach().clone() if needs_original_pure_noise(time_travel_velocity_mode) else None
 
     timesteps = set_sd3_timesteps(pipe, latents, num_inference_steps, device=device)
     sigmas = pipe.scheduler.sigmas.to(device=device, dtype=latents.dtype)
@@ -1990,8 +1825,18 @@ def sample_factorized_lookingglass(
         )
 
         synced_velocity = (latents - synced_clean) / sigma.clamp_min(1e-6)
+        raw_velocity = (latents - composited_clean) / sigma.clamp_min(1e-6)
+        transition_velocity = select_time_travel_velocity(
+            mode=time_travel_velocity_mode,
+            current_latents=latents,
+            current_sigma=sigma,
+            next_sigma=next_sigma,
+            synced_velocity=synced_velocity,
+            raw_velocity=raw_velocity,
+            original_pure_noise=original_pure_noise,
+        )
         latents_dtype = latents.dtype
-        latents = flowmatch_euler_step(latents, synced_velocity, sigma, next_sigma)
+        latents = flowmatch_euler_step(latents, transition_velocity, sigma, next_sigma)
         latents = latents.to(latents_dtype).detach()
 
         if callback is not None:
